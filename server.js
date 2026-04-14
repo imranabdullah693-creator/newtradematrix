@@ -338,6 +338,27 @@ app.post('/api/bot/close/:id',authMW,(req,res)=>{
   closeTrade(t,bot.lastAnalysis[t.symbol]?.price||t.entryPrice,'manual');res.json({success:true});
 });
 
+// Real wallet balance
+app.get('/api/bot/wallet',authMW,async(req,res)=>{
+  if(!bot.credentials)return res.json({connected:false,error:'No exchange connected'});
+  try{
+    const{apiKey,apiSecret,passphrase}=bot.credentials;
+    const ep='/api/v1/accounts?type=trade';
+    const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+    const d=await safeJSON(r);
+    if(d.code!=='200000')return res.json({connected:false,error:d.msg||'API error'});
+    const balances={};
+    for(const a of d.data){const v=parseFloat(a.available);if(v>0)balances[a.currency]=(balances[a.currency]||0)+v}
+    let totalUSD=0;
+    try{
+      const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);
+      const pm={USDT:1,USDC:1};if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;
+      for(const[c,a]of Object.entries(balances))totalUSD+=(pm[c]||0)*a;
+    }catch{}
+    res.json({connected:true,balances,totalUSD:Math.round(totalUSD*100)/100,assets:Object.keys(balances).length});
+  }catch(e){res.json({connected:false,error:e.message})}
+});
+
 // AI Advisor - sends analysis to Anthropic API
 app.post('/api/bot/ai-advice',authMW,async(req,res)=>{
   const{symbol='BTC-USDT',anthropicKey}=req.body||{};
