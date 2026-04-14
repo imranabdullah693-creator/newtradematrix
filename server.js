@@ -50,15 +50,60 @@ async function getSentiment(){
 async function fetchNews(){
   if(Date.now()-newsCache.updated<60000&&newsCache.updated>0)return newsCache;
   try{
-    const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');
-    const d=await safeJSON(r);
-    if(d.Data){
-      const articles=d.Data.slice(0,30).map(a=>({title:a.title,source:a.source,url:a.url,time:a.published_on*1000,body:(a.body||'').slice(0,200),categories:(a.categories||'').toLowerCase(),score:scoreText(a.title+' '+(a.body||'').slice(0,300))}));
-      const cs={};
-      for(const[sym,name]of Object.entries(COINS_MAP)){const rel=articles.filter(a=>(a.title+' '+a.body+' '+a.categories).toLowerCase().includes(name)||(a.title+' '+a.categories).toLowerCase().includes(sym.toLowerCase()));if(rel.length)cs[sym]={score:Math.round(rel.reduce((s,a)=>s+a.score,0)/rel.length*100)/100,n:rel.length,bias:rel.reduce((s,a)=>s+a.score,0)/rel.length>0.5?'bullish':rel.reduce((s,a)=>s+a.score,0)/rel.length<-0.5?'bearish':'neutral'}}
-      const as=articles.reduce((s,a)=>s+a.score,0)/articles.length;
-      newsCache={articles,sentiment:cs,overall:{score:Math.round(as*100)/100,bias:as>0.3?'bullish':as<-0.3?'bearish':'neutral'},updated:Date.now()};
-    }
+    // Crypto-specific news
+    const r1=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');
+    const d1=await safeJSON(r1);
+    let articles=[];
+    if(d1.Data)articles=d1.Data.slice(0,20).map(a=>({title:a.title,source:a.source,url:a.url,time:a.published_on*1000,body:(a.body||'').slice(0,200),categories:(a.categories||'').toLowerCase(),score:scoreText(a.title+' '+(a.body||'').slice(0,300)),type:'crypto'}));
+
+    // Macro/World news that affects crypto (Fed, dollar, economy, geopolitics)
+    try{
+      const macroFeeds=['https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=regulation,trading,blockchain,market&sortOrder=latest'];
+      // Also search for macro keywords in the existing articles + add macro keyword scoring
+      const MACRO_BULL=['rate cut','dovish','stimulus','qe','money printing','inflation cool','soft landing','peace','trade deal','dollar weak','dxy down','fed pause','liquidity','risk on'];
+      const MACRO_BEAR=['rate hike','hawkish','taper','qt','recession','inflation hot','hard landing','war','sanction','tariff','dollar strong','dxy up','fed tighten','risk off','default','debt ceiling','shutdown'];
+
+      // Score existing articles for macro impact too
+      articles.forEach(a=>{
+        const txt=(a.title+' '+(a.body||'')).toLowerCase();
+        let macroScore=0;
+        for(const w of MACRO_BULL)if(txt.includes(w))macroScore+=2;
+        for(const w of MACRO_BEAR)if(txt.includes(w))macroScore-=2;
+        a.macroScore=macroScore;
+        a.score+=macroScore; // combine with regular score
+        if(macroScore!==0)a.type='macro';
+      });
+
+      // Fetch additional general financial news
+      const r2=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=regulation,fiat,exchange&sortOrder=latest');
+      const d2=await safeJSON(r2);
+      if(d2.Data){
+        const macroArticles=d2.Data.slice(0,15).map(a=>{
+          const txt=(a.title+' '+(a.body||'')).toLowerCase();
+          let ms=0;
+          for(const w of MACRO_BULL)if(txt.includes(w))ms+=2;
+          for(const w of MACRO_BEAR)if(txt.includes(w))ms-=2;
+          return{title:a.title,source:a.source,url:a.url,time:a.published_on*1000,body:(a.body||'').slice(0,200),categories:(a.categories||'').toLowerCase(),score:scoreText(a.title+' '+(a.body||'').slice(0,300))+ms,macroScore:ms,type:ms!==0?'macro':'crypto'};
+        });
+        // Merge and deduplicate by title
+        const existing=new Set(articles.map(a=>a.title));
+        for(const a of macroArticles)if(!existing.has(a.title)){articles.push(a);existing.add(a.title)}
+      }
+    }catch(e){/* macro fetch optional */}
+
+    // Sort by time
+    articles.sort((a,b)=>b.time-a.time);
+
+    // Coin sentiment
+    const cs={};
+    for(const[sym,name]of Object.entries(COINS_MAP)){const rel=articles.filter(a=>(a.title+' '+a.body+' '+a.categories).toLowerCase().includes(name)||(a.title+' '+a.categories).toLowerCase().includes(sym.toLowerCase()));if(rel.length)cs[sym]={score:Math.round(rel.reduce((s,a)=>s+a.score,0)/rel.length*100)/100,n:rel.length,bias:rel.reduce((s,a)=>s+a.score,0)/rel.length>0.5?'bullish':rel.reduce((s,a)=>s+a.score,0)/rel.length<-0.5?'bearish':'neutral'}}
+
+    // Overall + macro sentiment
+    const as=articles.reduce((s,a)=>s+a.score,0)/Math.max(articles.length,1);
+    const macroArticles=articles.filter(a=>a.type==='macro');
+    const macroAvg=macroArticles.length?macroArticles.reduce((s,a)=>s+a.score,0)/macroArticles.length:0;
+
+    newsCache={articles,sentiment:cs,overall:{score:Math.round(as*100)/100,bias:as>0.3?'bullish':as<-0.3?'bearish':'neutral',macroScore:Math.round(macroAvg*100)/100,macroBias:macroAvg>0.3?'bullish':macroAvg<-0.3?'bearish':'neutral'},updated:Date.now()};
   }catch(e){console.log('News err:',e.message)}
   return newsCache;
 }
@@ -81,149 +126,199 @@ async function analyze(candles,sym='BTC-USDT'){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRADING COUNCIL — 7 SPECIALIST AGENTS
+// TRADING COUNCIL — 7 SPECIALIST AGENTS (BALANCED BUY/SELL)
 // Each agent focuses on different indicators and votes buy/sell/hold
-// Trade executes ONLY when enough agents agree (configurable threshold)
+// Sell thresholds now match buy thresholds for balance
 // ═══════════════════════════════════════════════════════════════════════════
 const AGENTS={
   // Agent 1: Trend Master — EMA alignment + ADX
   trend_master(a){
-    if(!a.ema9||!a.ema21||!a.ema50||a.adx===null)return{vote:'hold',confidence:0,reason:'no data'};
+    if(!a.ema9||!a.ema21||a.adx===null)return{vote:'hold',confidence:0,reason:'no data'};
     const strong=a.adx>25;
-    if(a.ema9>a.ema21&&a.ema21>a.ema50&&strong)return{vote:'buy',confidence:90,reason:'strong uptrend, EMAs aligned, ADX '+a.adx.toFixed(0)};
-    if(a.ema9>a.ema21&&a.ema21>a.ema50)return{vote:'buy',confidence:65,reason:'uptrend, EMAs aligned'};
+    // BUY conditions
+    if(a.ema9>a.ema21&&a.ema21>a.ema50&&strong)return{vote:'buy',confidence:90,reason:'strong uptrend, EMAs aligned'};
+    if(a.ema9>a.ema21&&a.ema21>a.ema50)return{vote:'buy',confidence:65,reason:'uptrend'};
+    if(a.ema9>a.ema21)return{vote:'buy',confidence:45,reason:'mild uptrend'};
+    // SELL conditions (mirrored)
     if(a.ema9<a.ema21&&a.ema21<a.ema50&&strong)return{vote:'sell',confidence:90,reason:'strong downtrend, EMAs aligned'};
     if(a.ema9<a.ema21&&a.ema21<a.ema50)return{vote:'sell',confidence:65,reason:'downtrend'};
-    if(a.ema9>a.ema21&&a.rsi>50)return{vote:'buy',confidence:50,reason:'mild uptrend'};
-    if(a.ema9<a.ema21&&a.rsi<50)return{vote:'sell',confidence:50,reason:'mild downtrend'};
+    if(a.ema9<a.ema21)return{vote:'sell',confidence:45,reason:'mild downtrend'};
     return{vote:'hold',confidence:0,reason:'no clear trend'};
   },
 
   // Agent 2: Momentum Hunter — RSI + StochRSI
   momentum_hunter(a){
     if(a.rsi===null||a.stochK===null)return{vote:'hold',confidence:0,reason:'no data'};
-    if(a.rsi<30&&a.stochK<20&&a.stochK>a.stochD)return{vote:'buy',confidence:85,reason:'deeply oversold, StochRSI crossing up'};
-    if(a.rsi<35&&a.stochK<25)return{vote:'buy',confidence:70,reason:'oversold zone'};
-    if(a.rsi>70&&a.stochK>80&&a.stochK<a.stochD)return{vote:'sell',confidence:85,reason:'deeply overbought, StochRSI crossing down'};
-    if(a.rsi>65&&a.stochK>75)return{vote:'sell',confidence:70,reason:'overbought zone'};
-    if(a.rsi>45&&a.rsi<55&&a.prevRsi&&a.rsi>a.prevRsi&&a.stochK>a.stochD)return{vote:'buy',confidence:55,reason:'momentum rising'};
-    if(a.rsi>45&&a.rsi<55&&a.prevRsi&&a.rsi<a.prevRsi&&a.stochK<a.stochD)return{vote:'sell',confidence:55,reason:'momentum falling'};
+    // BUY: oversold
+    if(a.rsi<30&&a.stochK<20)return{vote:'buy',confidence:85,reason:'deeply oversold RSI:'+a.rsi.toFixed(0)};
+    if(a.rsi<40&&a.stochK<30&&a.stochK>a.stochD)return{vote:'buy',confidence:65,reason:'oversold, StochRSI turning up'};
+    if(a.rsi<45&&a.prevRsi&&a.rsi>a.prevRsi)return{vote:'buy',confidence:45,reason:'RSI rising from low'};
+    // SELL: overbought (mirrored thresholds)
+    if(a.rsi>70&&a.stochK>80)return{vote:'sell',confidence:85,reason:'deeply overbought RSI:'+a.rsi.toFixed(0)};
+    if(a.rsi>60&&a.stochK>70&&a.stochK<a.stochD)return{vote:'sell',confidence:65,reason:'overbought, StochRSI turning down'};
+    if(a.rsi>55&&a.prevRsi&&a.rsi<a.prevRsi)return{vote:'sell',confidence:45,reason:'RSI falling from high'};
     return{vote:'hold',confidence:0,reason:'neutral momentum'};
   },
 
   // Agent 3: MACD Specialist — MACD crossovers + histogram
   macd_specialist(a){
     if(a.macdHist===null||a.prevMacdHist===null)return{vote:'hold',confidence:0,reason:'no data'};
-    const cross_up=a.macdHist>0&&a.prevMacdHist<=0;
-    const cross_dn=a.macdHist<0&&a.prevMacdHist>=0;
+    const crossUp=a.macdHist>0&&a.prevMacdHist<=0;
+    const crossDn=a.macdHist<0&&a.prevMacdHist>=0;
     const growing=Math.abs(a.macdHist)>Math.abs(a.prevMacdHist);
-    if(cross_up&&growing)return{vote:'buy',confidence:85,reason:'MACD bullish cross, growing momentum'};
-    if(cross_up)return{vote:'buy',confidence:70,reason:'MACD bullish cross'};
-    if(cross_dn&&growing)return{vote:'sell',confidence:85,reason:'MACD bearish cross, growing'};
-    if(cross_dn)return{vote:'sell',confidence:70,reason:'MACD bearish cross'};
-    if(a.macdHist>0&&growing)return{vote:'buy',confidence:50,reason:'MACD positive, growing'};
-    if(a.macdHist<0&&growing)return{vote:'sell',confidence:50,reason:'MACD negative, growing'};
+    // BUY
+    if(crossUp)return{vote:'buy',confidence:growing?85:70,reason:'MACD bullish cross'+(growing?' +growing':'')};
+    if(a.macdHist>0&&growing)return{vote:'buy',confidence:50,reason:'MACD positive growing'};
+    // SELL (mirrored)
+    if(crossDn)return{vote:'sell',confidence:growing?85:70,reason:'MACD bearish cross'+(growing?' +growing':'')};
+    if(a.macdHist<0&&growing)return{vote:'sell',confidence:50,reason:'MACD negative growing'};
+    // Divergence hints
+    if(a.macdHist<0&&!growing&&a.prevMacdHist<a.macdHist)return{vote:'buy',confidence:40,reason:'MACD neg but recovering'};
+    if(a.macdHist>0&&!growing&&a.prevMacdHist>a.macdHist)return{vote:'sell',confidence:40,reason:'MACD pos but weakening'};
     return{vote:'hold',confidence:0,reason:'MACD neutral'};
   },
 
-  // Agent 4: Fibonacci Analyst — Support/resistance + golden pocket
+  // Agent 4: Fibonacci Analyst
   fibonacci_analyst(a){
     if(!a.fib||!a.price||!a.atr)return{vote:'hold',confidence:0,reason:'no data'};
-    const distToSup=Math.abs(a.price-a.support)/a.price*100;
-    const distToRes=Math.abs(a.resistance-a.price)/a.price*100;
-    if(a.inGoldenPocket&&a.rsi<50)return{vote:'buy',confidence:85,reason:'in golden pocket (0.618), RSI favorable'};
-    if(a.inGoldenPocket)return{vote:'buy',confidence:70,reason:'in golden pocket zone'};
-    if(distToSup<0.5&&a.rsi<45)return{vote:'buy',confidence:75,reason:'at fib support level'};
-    if(distToRes<0.5&&a.rsi>55)return{vote:'sell',confidence:75,reason:'at fib resistance level'};
-    if(distToSup<1.5)return{vote:'buy',confidence:55,reason:'near fib support'};
-    if(distToRes<1.5)return{vote:'sell',confidence:55,reason:'near fib resistance'};
-    return{vote:'hold',confidence:0,reason:'between fib levels'};
+    const distSup=Math.abs(a.price-a.support)/a.price*100;
+    const distRes=Math.abs(a.resistance-a.price)/a.price*100;
+    // BUY near support
+    if(a.inGoldenPocket&&a.rsi<55)return{vote:'buy',confidence:80,reason:'golden pocket zone'};
+    if(distSup<0.5)return{vote:'buy',confidence:70,reason:'at fib support'};
+    if(distSup<1.5&&a.rsi<50)return{vote:'buy',confidence:50,reason:'near fib support'};
+    // SELL near resistance (mirrored)
+    if(distRes<0.5)return{vote:'sell',confidence:70,reason:'at fib resistance'};
+    if(distRes<1.5&&a.rsi>50)return{vote:'sell',confidence:50,reason:'near fib resistance'};
+    if(a.price>a.fib.high*0.98)return{vote:'sell',confidence:60,reason:'near recent high'};
+    return{vote:'hold',confidence:0,reason:'between levels'};
   },
 
-  // Agent 5: Volume Expert — OBV + Volume trend + VWAP
+  // Agent 5: Volume Expert — OBV + VWAP
   volume_expert(a){
     if(!a.vwap||!a.price)return{vote:'hold',confidence:0,reason:'no data'};
     let score=0,reasons=[];
-    if(a.obvTrend==='bullish'){score+=30;reasons.push('OBV bullish')}
-    if(a.obvTrend==='bearish'){score-=30;reasons.push('OBV bearish')}
-    if(a.volTrend==='high'){score+=score>0?20:-20;reasons.push('high volume confirms')}
-    if(a.price>a.vwap){score+=15;reasons.push('above VWAP')}
-    if(a.price<a.vwap){score-=15;reasons.push('below VWAP')}
-    if(score>=40)return{vote:'buy',confidence:60+Math.min(score-40,30),reason:reasons.join(', ')};
-    if(score<=-40)return{vote:'sell',confidence:60+Math.min(Math.abs(score)-40,30),reason:reasons.join(', ')};
+    if(a.obvTrend==='bullish'){score+=25;reasons.push('OBV+')}
+    if(a.obvTrend==='bearish'){score-=25;reasons.push('OBV-')}
+    if(a.volTrend==='high'){const dir=score>=0?1:-1;score+=15*dir;reasons.push('high vol')}
+    if(a.price>a.vwap*1.005){score+=15;reasons.push('>VWAP')}
+    if(a.price<a.vwap*0.995){score-=15;reasons.push('<VWAP')}
+    if(score>=30)return{vote:'buy',confidence:55+Math.min(score-30,30),reason:reasons.join(', ')};
+    if(score<=-30)return{vote:'sell',confidence:55+Math.min(Math.abs(score)-30,30),reason:reasons.join(', ')};
+    if(score>=15)return{vote:'buy',confidence:40,reason:reasons.join(', ')};
+    if(score<=-15)return{vote:'sell',confidence:40,reason:reasons.join(', ')};
     return{vote:'hold',confidence:0,reason:'volume neutral'};
   },
 
-  // Agent 6: Bollinger Bands Trader — BB squeeze/breakout
+  // Agent 6: Bollinger Trader
   bollinger_trader(a){
-    if(!a.bbUpper||!a.bbLower||!a.price||!a.rsi)return{vote:'hold',confidence:0,reason:'no data'};
-    const width=((a.bbUpper-a.bbLower)/a.bbSma)*100;
+    if(!a.bbUpper||!a.bbLower||!a.price)return{vote:'hold',confidence:0,reason:'no data'};
     const pos=(a.price-a.bbLower)/(a.bbUpper-a.bbLower);
-    if(pos<0.1&&a.rsi<40)return{vote:'buy',confidence:80,reason:'at lower BB, RSI oversold'};
-    if(pos<0.2&&a.rsi<45)return{vote:'buy',confidence:65,reason:'near lower BB'};
-    if(pos>0.9&&a.rsi>60)return{vote:'sell',confidence:80,reason:'at upper BB, RSI overbought'};
-    if(pos>0.8&&a.rsi>55)return{vote:'sell',confidence:65,reason:'near upper BB'};
-    if(width<3&&pos>0.5)return{vote:'buy',confidence:55,reason:'BB squeeze, leaning bullish'};
-    if(width<3&&pos<0.5)return{vote:'sell',confidence:55,reason:'BB squeeze, leaning bearish'};
-    return{vote:'hold',confidence:0,reason:'mid BB range'};
+    // BUY at lower band
+    if(pos<0.1)return{vote:'buy',confidence:80,reason:'at lower BB ('+Math.round(pos*100)+'%)'};
+    if(pos<0.25)return{vote:'buy',confidence:55,reason:'near lower BB'};
+    // SELL at upper band (mirrored)
+    if(pos>0.9)return{vote:'sell',confidence:80,reason:'at upper BB ('+Math.round(pos*100)+'%)'};
+    if(pos>0.75)return{vote:'sell',confidence:55,reason:'near upper BB'};
+    return{vote:'hold',confidence:0,reason:'mid BB ('+Math.round(pos*100)+'%)'};
   },
 
-  // Agent 7: Sentiment & News Analyst — Fear/greed + news
+  // Agent 7: Sentiment & News (including macro)
   sentiment_analyst(a){
     if(!a.sentiment||!a.news)return{vote:'hold',confidence:0,reason:'no data'};
     let score=0,reasons=[];
     const fg=a.sentiment.value;
-    if(fg<20){score+=35;reasons.push('extreme fear (contrarian buy)')}
+    if(fg<20){score+=35;reasons.push('extreme fear=buy')}
     else if(fg<35){score+=20;reasons.push('fear zone')}
-    else if(fg>80){score-=35;reasons.push('extreme greed (contrarian sell)')}
+    else if(fg>80){score-=35;reasons.push('extreme greed=sell')}
     else if(fg>65){score-=20;reasons.push('greed zone')}
     const cn=a.news.coin;
-    if(cn&&cn.bias==='bullish'){score+=25;reasons.push('bullish news for coin')}
-    if(cn&&cn.bias==='bearish'){score-=25;reasons.push('bearish news for coin')}
+    if(cn&&cn.bias==='bullish'){score+=20;reasons.push('coin news+')}
+    if(cn&&cn.bias==='bearish'){score-=20;reasons.push('coin news-')}
     const ov=a.news.overall;
-    if(ov&&ov.bias==='bullish'){score+=10;reasons.push('market news bullish')}
-    if(ov&&ov.bias==='bearish'){score-=10;reasons.push('market news bearish')}
-    if(score>=30)return{vote:'buy',confidence:55+Math.min(score-30,30),reason:reasons.join(', ')};
-    if(score<=-30)return{vote:'sell',confidence:55+Math.min(Math.abs(score)-30,30),reason:reasons.join(', ')};
-    return{vote:'hold',confidence:0,reason:'sentiment neutral (F&G: '+fg+')'};
+    if(ov&&ov.bias==='bullish'){score+=10;reasons.push('mkt news+')}
+    if(ov&&ov.bias==='bearish'){score-=10;reasons.push('mkt news-')}
+    if(ov&&ov.macroBias==='bullish'){score+=15;reasons.push('macro+')}
+    if(ov&&ov.macroBias==='bearish'){score-=15;reasons.push('macro-')}
+    if(score>=25)return{vote:'buy',confidence:50+Math.min(score-25,35),reason:reasons.join(', ')};
+    if(score<=-25)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-25,35),reason:reasons.join(', ')};
+    return{vote:'hold',confidence:0,reason:'neutral (F&G:'+fg+')'};
   }
 };
 
-// ═══ COUNCIL VOTE ═══
+// ═══ COUNCIL VOTE (with market-aware asymmetry) ═══
 function councilVote(a,requiredAgree=4){
   const votes={};
-  for(const[name,fn]of Object.entries(AGENTS)){
-    votes[name]=fn(a);
-  }
+  for(const[name,fn]of Object.entries(AGENTS))votes[name]=fn(a);
   const buys=Object.entries(votes).filter(([_,v])=>v.vote==='buy');
   const sells=Object.entries(votes).filter(([_,v])=>v.vote==='sell');
   const buyConf=buys.length?Math.round(buys.reduce((s,[_,v])=>s+v.confidence,0)/buys.length):0;
   const sellConf=sells.length?Math.round(sells.reduce((s,[_,v])=>s+v.confidence,0)/sells.length):0;
 
+  // In bearish conditions, need 1 fewer agent for sells (easier to short)
+  // In bullish conditions, need 1 fewer agent for buys (easier to long)
+  let buyReq=requiredAgree,sellReq=requiredAgree;
+  if(a.condition&&a.condition.includes('bearish'))sellReq=Math.max(2,requiredAgree-1);
+  if(a.condition&&a.condition.includes('bullish'))buyReq=Math.max(2,requiredAgree-1);
+
   let decision='hold',conf=0,agreeing=0;
-  if(buys.length>=requiredAgree&&buys.length>sells.length){
-    decision='buy';conf=buyConf;agreeing=buys.length;
-  }else if(sells.length>=requiredAgree&&sells.length>buys.length){
-    decision='sell';conf=sellConf;agreeing=sells.length;
+  if(buys.length>=buyReq&&buys.length>sells.length){decision='buy';conf=buyConf;agreeing=buys.length}
+  else if(sells.length>=sellReq&&sells.length>buys.length){decision='sell';conf=sellConf;agreeing=sells.length}
+  // If tied and both meet threshold, go with higher confidence
+  else if(buys.length>=buyReq&&sells.length>=sellReq){
+    if(buyConf>sellConf){decision='buy';conf=buyConf;agreeing=buys.length}
+    else{decision='sell';conf=sellConf;agreeing=sells.length}
   }
-  // Bonus confidence when more agents agree
+
   if(agreeing>=6)conf=Math.min(conf+15,100);
   else if(agreeing>=5)conf=Math.min(conf+10,100);
 
-  return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,buyCount:buys.length,sellCount:sells.length};
+  return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,buyCount:buys.length,sellCount:sells.length,buyReq,sellReq};
 }
 
 // ═══ BOT STATE ═══
 const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','ADA-USDT','DOGE-USDT','LINK-USDT','AVAX-USDT','DOT-USDT','MATIC-USDT','SHIB-USDT','UNI-USDT','ATOM-USDT','LTC-USDT','FIL-USDT','NEAR-USDT','APT-USDT','ARB-USDT','OP-USDT','SUI-USDT','SEI-USDT','INJ-USDT','FET-USDT','RENDER-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT','TIA-USDT','BNB-USDT'];
+const SETTINGS_FILE=path.join(__dirname,'.bot-settings.json');
+const STATE_FILE=path.join(__dirname,'.bot-state.json');
 const bot={
-  running:false,mode:'paper',tradingType:'spot',
+  running:false,mode:'paper',tradingType:'combined',
   symbols:ALL_SYMBOLS,intervalMs:45000,intervalId:null,
-  requiredAgents:4, // how many agents must agree
+  requiredAgents:4,
   riskPct:2,maxDrawdownPct:15,slATR:1.5,tpATR:3.0,trailingStop:true,trailATR:1.0,maxOpenTrades:10,leverage:5,
   paperUSD:10000,startBal:10000,peakBal:10000,
   openTrades:[],history:[],totalPnL:0,winCount:0,lossCount:0,
   lastAnalysis:{},lastCouncil:{},log:[],cooldown:{},credentials:null
 };
+
+// Load saved settings on startup
+function loadSettings(){
+  try{if(fs.existsSync(SETTINGS_FILE)){const s=JSON.parse(fs.readFileSync(SETTINGS_FILE,'utf8'));
+    if(s.mode)bot.mode=s.mode;if(s.tradingType)bot.tradingType=s.tradingType;
+    if(s.symbols)bot.symbols=s.symbols;if(s.intervalMs)bot.intervalMs=s.intervalMs;
+    if(s.requiredAgents)bot.requiredAgents=s.requiredAgents;
+    if(s.riskPct)bot.riskPct=s.riskPct;if(s.maxDrawdownPct)bot.maxDrawdownPct=s.maxDrawdownPct;
+    if(s.slATR)bot.slATR=s.slATR;if(s.tpATR)bot.tpATR=s.tpATR;
+    if(s.trailingStop!==undefined)bot.trailingStop=s.trailingStop;if(s.trailATR)bot.trailATR=s.trailATR;
+    if(s.maxOpenTrades)bot.maxOpenTrades=s.maxOpenTrades;if(s.leverage)bot.leverage=s.leverage;
+    if(s.credentials)bot.credentials=s.credentials;
+    console.log('Settings loaded from disk')}}catch(e){console.log('No saved settings')}
+  try{if(fs.existsSync(STATE_FILE)){const s=JSON.parse(fs.readFileSync(STATE_FILE,'utf8'));
+    if(s.paperUSD!==undefined)bot.paperUSD=s.paperUSD;if(s.startBal)bot.startBal=s.startBal;
+    if(s.peakBal)bot.peakBal=s.peakBal;if(s.totalPnL!==undefined)bot.totalPnL=s.totalPnL;
+    if(s.winCount!==undefined)bot.winCount=s.winCount;if(s.lossCount!==undefined)bot.lossCount=s.lossCount;
+    if(s.history)bot.history=s.history;if(s.openTrades)bot.openTrades=s.openTrades;
+    console.log('State loaded from disk')}}catch(e){console.log('No saved state')}
+}
+function saveSettings(){
+  try{fs.writeFileSync(SETTINGS_FILE,JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,credentials:bot.credentials}))}catch(e){console.log('Save settings err:',e.message)}
+}
+function saveState(){
+  try{fs.writeFileSync(STATE_FILE,JSON.stringify({paperUSD:bot.paperUSD,startBal:bot.startBal,peakBal:bot.peakBal,totalPnL:bot.totalPnL,winCount:bot.winCount,lossCount:bot.lossCount,history:bot.history.slice(-200),openTrades:bot.openTrades}))}catch(e){console.log('Save state err:',e.message)}
+}
+loadSettings(); // load on startup
+// Auto-save state every 60s
+setInterval(saveState,60000);
+
 function botLog(m){const e={time:new Date().toISOString(),msg:m};bot.log.push(e);if(bot.log.length>500)bot.log.shift();console.log('[BOT]',m)}
 
 // ═══ FETCH CANDLES ═══
@@ -252,7 +347,7 @@ function closeTrade(t,price,reason){
   t.pnl=t.type==='futures'?raw*t.leverage:raw;t.pnlPct=((t.exitPrice-t.entryPrice)/t.entryPrice*100*dir*(t.type==='futures'?t.leverage:1));
   bot.paperUSD+=t.margin+t.pnl;bot.totalPnL+=t.pnl;t.pnl>0?bot.winCount++:bot.lossCount++;
   bot.openTrades=bot.openTrades.filter(x=>x.id!==t.id);bot.history.push(t);if(bot.history.length>500)bot.history.shift();
-  botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(2)} | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);
+  botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(2)} | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
 }
 
 async function liveOrder(side,sym,qty){
@@ -311,8 +406,8 @@ async function tick(){
 
         // Execute
         if(bot.mode==='paper'){
-          if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,bot.tradingType);
-          else if(council.decision==='sell'&&(bot.tradingType==='futures'||bot.tradingType==='combined'))paperSell(sym,price,posUSD,sl,tp,council.confidence,council);
+          if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,bot.tradingType==='spot'?'spot':'spot');
+          else if(council.decision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council);
         }else{
           try{await liveOrder(council.decision,sym,(posUSD/price).toFixed(6));
             bot.openTrades.push({id:crypto.randomUUID().slice(0,8),symbol:sym,side:council.decision,type:bot.tradingType,leverage:bot.tradingType==='futures'?bot.leverage:1,entryPrice:price,qty:posUSD/price,usdAmount:posUSD,margin:posUSD,sl,tp,confidence:council.confidence,agreeing:council.agreeing,openTime:new Date().toISOString(),status:'open',highSince:price,trailingSl:bot.trailingStop?sl:null});
@@ -356,7 +451,7 @@ async function backtest(sym,reqAgents=4,periods=500){
 }
 
 // ═══ ROUTES ═══
-app.post('/api/bot/connect',mw,(req,res)=>{const{apiKey,apiSecret,passphrase}=req.body||{};if(!apiKey||!apiSecret||!passphrase)return res.status(400).json({error:'All fields required'});bot.credentials={apiKey,apiSecret,passphrase};botLog('Exchange connected');res.json({success:true})});
+app.post('/api/bot/connect',mw,(req,res)=>{const{apiKey,apiSecret,passphrase}=req.body||{};if(!apiKey||!apiSecret||!passphrase)return res.status(400).json({error:'All fields required'});bot.credentials={apiKey,apiSecret,passphrase};botLog('Exchange connected');saveSettings();res.json({success:true})});
 app.post('/api/bot/start',mw,(req,res)=>{if(bot.running)return res.json({success:true});bot.running=true;botLog(`STARTED — ${bot.mode} | ${bot.symbols.length} coins | ${bot.requiredAgents}/${Object.keys(AGENTS).length} agents needed`);tick();bot.intervalId=setInterval(tick,bot.intervalMs);res.json({success:true})});
 app.post('/api/bot/stop',mw,(req,res)=>{bot.running=false;if(bot.intervalId){clearInterval(bot.intervalId);bot.intervalId=null}botLog('STOPPED');res.json({success:true})});
 
@@ -389,7 +484,7 @@ app.post('/api/bot/settings',mw,(req,res)=>{
   if(s.intervalMs!==undefined){bot.intervalMs=Math.max(30000,Math.min(300000,+s.intervalMs));if(bot.running&&bot.intervalId){clearInterval(bot.intervalId);bot.intervalId=setInterval(tick,bot.intervalMs)}}
   if(s.requiredAgents!==undefined)bot.requiredAgents=Math.max(2,Math.min(7,+s.requiredAgents));
   if(s.resetPaper){bot.paperUSD=10000;bot.startBal=10000;bot.peakBal=10000;bot.openTrades=[];bot.history=[];bot.totalPnL=0;bot.winCount=0;bot.lossCount=0;botLog('Paper reset')}
-  botLog('Settings updated');res.json({success:true});
+  botLog('Settings updated');saveSettings();saveState();res.json({success:true});
 });
 
 app.get('/api/bot/analysis/:sym',mw,async(req,res)=>{
