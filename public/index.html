@@ -126,6 +126,7 @@
     <!-- OVERVIEW -->
     <div class="pg act" id="pg-overview">
       <div class="warn">⚠ No strategy guarantees profits. This bot is a tool, not financial advice. Start with paper trading. The bot runs 24/7 on the server even when your device is off.</div>
+      <div class="cd" id="wallet-card"><div class="ct">💰 Your KuCoin Wallet</div><div id="wallet-content" style="color:var(--t3);font-size:11px">Loading wallet...</div></div>
       <div class="sr" id="stats"></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
       <div class="cd"><div class="ct">📋 Open Positions</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Sym</th><th>Side</th><th>Entry</th><th>Now</th><th>uPnL</th><th>Conf</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="7" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
@@ -261,9 +262,28 @@ async function api(url,opts={}){
 async function startBot(){await api('/api/bot/start',{method:'POST'});refresh()}
 async function stopBot(){await api('/api/bot/stop',{method:'POST'});refresh()}
 
+// ═══ WALLET ═══
+let lastWalletFetch=0;
+async function refreshWallet(){
+  if(Date.now()-lastWalletFetch<30000)return; // only fetch every 30s
+  lastWalletFetch=Date.now();
+  const w=await api('/api/bot/wallet');
+  const el=document.getElementById('wallet-content');
+  if(!w||w.error||!w.connected){
+    el.innerHTML='<div style="display:flex;align-items:center;gap:8px"><div class="sdot off"></div><span style="color:var(--re)">Not connected</span> — go to <strong>Connect</strong> page to link your KuCoin account</div>';
+    document.getElementById('wallet-card').style.borderColor='var(--b1)';
+    return;
+  }
+  const assets=Object.entries(w.balances||{}).map(([k,v])=>`<span style="background:var(--bg2);padding:3px 8px;border-radius:4px;font-family:var(--mono);font-size:10px">${k}: ${v<0.01?v.toFixed(6):v<1?v.toFixed(4):v.toFixed(2)}</span>`).join(' ');
+  el.innerHTML=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><div class="sdot on"></div><span style="color:var(--gr);font-weight:600">Connected to KuCoin</span></div><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--t1);margin-bottom:8px">$${w.totalUSD.toLocaleString(undefined,{minimumFractionDigits:2})}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${assets||'<span style="color:var(--t3)">No assets</span>'}</div>`;
+  document.getElementById('wallet-card').style.borderColor='rgba(0,230,118,0.2)';
+}
+
 // ═══ REFRESH ═══
 async function refresh(){
   const d=await api('/api/bot/status');if(d.error)return;
+  // Wallet
+  refreshWallet();
   // Header
   document.getElementById('sdot').className='sdot '+(d.running?'on':'off');
   document.getElementById('stxt').textContent=d.running?'On':'Off';
