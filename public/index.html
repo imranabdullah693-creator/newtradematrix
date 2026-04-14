@@ -88,10 +88,15 @@
   <div class="auth-box">
     <div style="font-size:28px;margin-bottom:8px">◆</div>
     <h1>TradeMatrix Pro</h1>
-    <p id="auth-subtitle">Set up your password to get started</p>
-    <input id="auth-pw" type="password" placeholder="Enter password"/>
-    <button class="abtn" id="auth-btn" onclick="doAuth()">Continue</button>
+    <p id="auth-subtitle">Create your account to get started</p>
+    <input id="auth-email" type="email" placeholder="Email address"/>
+    <input id="auth-pw" type="password" placeholder="Password (4+ characters)"/>
+    <button class="abtn" id="auth-btn" onclick="doAuth()">Create Account</button>
     <div class="auth-err" id="auth-err"></div>
+    <div style="margin-top:14px;font-size:10px;color:var(--t3)">
+      <span id="auth-toggle-text">Already have an account?</span>
+      <a href="#" id="auth-toggle" onclick="toggleAuthMode(event)" style="color:var(--bl);text-decoration:none"> Login</a>
+    </div>
   </div>
 </div>
 
@@ -178,25 +183,63 @@
 
 <script>
 let TOKEN=localStorage.getItem('tm_token')||'';
+let authMode='setup'; // 'setup' or 'login'
 
 // ═══ AUTH ═══
+function toggleAuthMode(e){
+  e.preventDefault();
+  if(authMode==='setup'){
+    authMode='login';
+    document.getElementById('auth-subtitle').textContent='Welcome back! Login to continue';
+    document.getElementById('auth-btn').textContent='Login';
+    document.getElementById('auth-toggle-text').textContent="Don't have an account?";
+    document.getElementById('auth-toggle').textContent=' Sign Up';
+  }else{
+    authMode='setup';
+    document.getElementById('auth-subtitle').textContent='Create your account to get started';
+    document.getElementById('auth-btn').textContent='Create Account';
+    document.getElementById('auth-toggle-text').textContent='Already have an account?';
+    document.getElementById('auth-toggle').textContent=' Login';
+  }
+  document.getElementById('auth-err').textContent='';
+}
+
 async function checkAuth(){
-  const r=await api('/api/auth/check');
-  if(r.needsSetup){document.getElementById('auth-subtitle').textContent='Set up your password to get started';document.getElementById('auth-btn').textContent='Create Account';document.getElementById('auth-wrap').style.display='flex';return}
-  if(r.authenticated){showApp();return}
-  document.getElementById('auth-subtitle').textContent='Enter your password to continue';
-  document.getElementById('auth-btn').textContent='Login';
-  document.getElementById('auth-wrap').style.display='flex';
+  try{
+    const r=await api('/api/auth/check');
+    if(r.needsSetup){authMode='setup';document.getElementById('auth-wrap').style.display='flex';return}
+    if(r.authenticated){showApp();return}
+    authMode='login';
+    document.getElementById('auth-subtitle').textContent='Welcome back! Login to continue';
+    document.getElementById('auth-btn').textContent='Login';
+    document.getElementById('auth-toggle-text').textContent="Don't have an account?";
+    document.getElementById('auth-toggle').textContent=' Sign Up';
+    document.getElementById('auth-wrap').style.display='flex';
+  }catch(e){
+    document.getElementById('auth-wrap').style.display='flex';
+  }
 }
+
 async function doAuth(){
-  const pw=document.getElementById('auth-pw').value;if(!pw)return;
-  const r=await api('/api/auth/check');
+  const email=document.getElementById('auth-email').value.trim();
+  const pw=document.getElementById('auth-pw').value;
+  const errEl=document.getElementById('auth-err');
+  errEl.textContent='';
+  if(!email){errEl.textContent='Please enter your email';return}
+  if(!pw||pw.length<4){errEl.textContent='Password must be 4+ characters';return}
+
   let d;
-  if(r.needsSetup)d=await api('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
-  else d=await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
-  if(d.error){document.getElementById('auth-err').textContent=d.error;return}
-  TOKEN=d.token;localStorage.setItem('tm_token',TOKEN);showApp();
+  if(authMode==='setup'){
+    d=await api('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pw})});
+  }else{
+    d=await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pw})});
+  }
+
+  if(d.needsSetup){authMode='setup';document.getElementById('auth-subtitle').textContent='Create your account to get started';document.getElementById('auth-btn').textContent='Create Account';errEl.textContent='No account yet — please sign up first';return}
+  if(d.error){errEl.textContent=d.error;return}
+  if(d.token){TOKEN=d.token;localStorage.setItem('tm_token',TOKEN);showApp()}
 }
+
 function showApp(){document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');refresh();setInterval(refresh,5000)}
 
 // ═══ NAV ═══
