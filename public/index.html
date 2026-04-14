@@ -174,6 +174,20 @@ async function refresh(){
   if(d.log.length)document.getElementById('logbox').innerHTML=d.log.map(l=>`<div><span style="color:var(--t3)">${new Date(l.time).toLocaleTimeString()}</span> ${l.msg}</div>`).join('');
   // Mini news
   if(d.recentNews&&d.recentNews.length)document.getElementById('news-mini').innerHTML=d.recentNews.slice(0,5).map(n=>`<div class="news-item">${n.type==='macro'?'<span class="tag" style="background:rgba(179,136,255,0.1);color:var(--pu);margin-right:4px">MACRO</span>':''}<a href="${n.url}" target="_blank" style="color:var(--t1);text-decoration:none">${n.title}</a><span class="news-score" style="background:${n.score>0?'var(--gd)':n.score<0?'var(--rd)':'var(--bg3)'};color:${n.score>0?'var(--gr)':n.score<0?'var(--re)':'var(--t3)'}">${n.score>0?'+':''}${n.score}</span><br/><span class="news-src">${n.source} · ${new Date(n.time).toLocaleTimeString()}</span></div>`).join('');
+  // Sync settings form from server
+  if(d.settings){
+    document.getElementById('smode').value=d.mode||'paper';
+    document.getElementById('stype').value=d.tradingType||'combined';
+    document.getElementById('sreq').value=String(d.requiredAgents||4);
+    document.getElementById('srisk').value=d.settings.riskPct||2;
+    document.getElementById('sdd').value=d.settings.maxDrawdownPct||15;
+    document.getElementById('ssl').value=d.settings.slATR||1.5;
+    document.getElementById('stp').value=d.settings.tpATR||3;
+    document.getElementById('strail').value=d.settings.trailingStop?'true':'false';
+    document.getElementById('slev').value=d.settings.leverage||5;
+    document.getElementById('smax').value=d.settings.maxOpenTrades||10;
+    document.getElementById('sint').value=String(d.settings.intervalMs||45000);
+  }
 }
 async function closeTr(id){if(!confirm('Close?'))return;await api('/api/bot/close/'+id,{method:'POST'});refresh()}
 
