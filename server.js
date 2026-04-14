@@ -3,33 +3,42 @@ const app=express();
 app.use(express.json());
 
 // ═══ AUTH ═══
-let AUTH={password:null,token:null};
+const fs=require('fs');
+const AUTH_FILE=path.join(__dirname,'.auth.json');
+let AUTH={email:null,password:null,tokens:[]};
+try{if(fs.existsSync(AUTH_FILE))AUTH=JSON.parse(fs.readFileSync(AUTH_FILE,'utf8'))}catch{}
+function saveAuth(){try{fs.writeFileSync(AUTH_FILE,JSON.stringify(AUTH))}catch(e){console.log('Auth save error:',e.message)}}
 function hashPw(pw){return crypto.createHash('sha256').update(pw+'tradematrix-salt').digest('hex')}
-function genToken(){return crypto.randomBytes(32).toString('hex')}
+function genToken(){const t=crypto.randomBytes(32).toString('hex');AUTH.tokens.push(t);if(AUTH.tokens.length>10)AUTH.tokens=AUTH.tokens.slice(-10);saveAuth();return t}
 function authMW(req,res,next){
-  if(!AUTH.password)return next(); // no password set yet = open
+  if(!AUTH.password)return next();
   const t=(req.headers.authorization||'').replace('Bearer ','');
-  if(!t||t!==AUTH.token)return res.status(401).json({error:'unauthorized'});
+  if(!t||!AUTH.tokens.includes(t))return res.status(401).json({error:'unauthorized'});
   next();
 }
 app.post('/api/auth/setup',(req,res)=>{
-  if(AUTH.password)return res.status(400).json({error:'Already set up. Use login.'});
-  const{password}=req.body||{};
+  if(AUTH.password)return res.status(400).json({error:'Account already exists. Please login.'});
+  const{email,password}=req.body||{};
+  if(!email||!email.includes('@'))return res.status(400).json({error:'Valid email required'});
   if(!password||password.length<4)return res.status(400).json({error:'Password must be 4+ characters'});
-  AUTH.password=hashPw(password);AUTH.token=genToken();
-  res.json({success:true,token:AUTH.token});
+  AUTH.email=email;AUTH.password=hashPw(password);
+  const token=genToken();
+  console.log('Account created for:',email);
+  res.json({success:true,token});
 });
 app.post('/api/auth/login',(req,res)=>{
-  if(!AUTH.password)return res.json({success:true,token:'open',needsSetup:true});
-  const{password}=req.body||{};
+  if(!AUTH.password)return res.json({success:true,needsSetup:true});
+  const{email,password}=req.body||{};
+  if(!email||!password)return res.status(400).json({error:'Email and password required'});
+  if(email!==AUTH.email)return res.status(401).json({error:'Email not found'});
   if(hashPw(password)!==AUTH.password)return res.status(401).json({error:'Wrong password'});
-  AUTH.token=genToken();
-  res.json({success:true,token:AUTH.token});
+  const token=genToken();
+  res.json({success:true,token});
 });
 app.get('/api/auth/check',(req,res)=>{
   if(!AUTH.password)return res.json({needsSetup:true});
   const t=(req.headers.authorization||'').replace('Bearer ','');
-  res.json({authenticated:t===AUTH.token,needsSetup:false});
+  res.json({authenticated:!!t&&AUTH.tokens.includes(t),needsSetup:false});
 });
 
 // ═══ SIGNING ═══
