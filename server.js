@@ -487,16 +487,19 @@ async function fetchKlines(sym,type='15min',limit=100){
 }
 
 // ═══ TRADE EXECUTION ═══
-function paperBuy(sym,price,usd,sl,tp,conf,council,type='spot'){
-  const qty=usd/price,lev=type==='futures'?bot.leverage:1,margin=type==='futures'?usd/lev:usd;
+function paperBuy(sym,price,usd,sl,tp,conf,council,type='spot',autoLev=1){
+  const qty=usd/price,lev=autoLev>1?autoLev:1,margin=lev>1?usd/lev:usd;
   bot.paperUSD-=margin;
-  const t={id:crypto.randomUUID().slice(0,8),symbol:sym,side:'buy',type,leverage:lev,entryPrice:price,qty,usdAmount:usd,margin,sl,tp,confidence:conf,agreeing:council.agreeing,trailingSl:bot.trailingStop?sl:null,highSince:price,openTime:new Date().toISOString(),status:'open'};
-  bot.openTrades.push(t);botLog(`BUY ${sym} @$${price.toFixed(2)} | ${council.agreeing}/${council.total} agents agree | conf:${conf}% | SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)}`);return t;
+  const slPct=((Math.abs(price-sl)/price)*100).toFixed(2);
+  const t={id:crypto.randomUUID().slice(0,8),symbol:sym,side:'buy',type:lev>1?'futures':'spot',leverage:lev,entryPrice:price,qty,usdAmount:usd,margin,sl,tp,confidence:conf,agreeing:council.agreeing,trailingSl:bot.trailingStop?sl:null,highSince:price,openTime:new Date().toISOString(),status:'open'};
+  bot.openTrades.push(t);botLog(`BUY ${sym} @$${price.toFixed(2)} | size:$${usd.toFixed(2)} | lev:${lev}x | SL:${slPct}% ($${sl.toFixed(2)}) | TP:$${tp.toFixed(2)} | ${council.agreeing}/${council.total} agents | conf:${conf}%`);return t;
 }
-function paperSell(sym,price,usd,sl,tp,conf,council){
-  const qty=usd/price,margin=usd/bot.leverage;bot.paperUSD-=margin;
-  const t={id:crypto.randomUUID().slice(0,8),symbol:sym,side:'sell',type:'futures',leverage:bot.leverage,entryPrice:price,qty,usdAmount:usd,margin,sl,tp,confidence:conf,agreeing:council.agreeing,trailingSl:bot.trailingStop?sl:null,lowSince:price,openTime:new Date().toISOString(),status:'open'};
-  bot.openTrades.push(t);botLog(`SHORT ${sym} @$${price.toFixed(2)} | ${council.agreeing}/${council.total} agents agree | conf:${conf}%`);return t;
+function paperSell(sym,price,usd,sl,tp,conf,council,autoLev=1){
+  const lev=autoLev>1?autoLev:bot.leverage;
+  const qty=usd/price,margin=usd/lev;bot.paperUSD-=margin;
+  const slPct=((Math.abs(sl-price)/price)*100).toFixed(2);
+  const t={id:crypto.randomUUID().slice(0,8),symbol:sym,side:'sell',type:'futures',leverage:lev,entryPrice:price,qty,usdAmount:usd,margin,sl,tp,confidence:conf,agreeing:council.agreeing,trailingSl:bot.trailingStop?sl:null,lowSince:price,openTime:new Date().toISOString(),status:'open'};
+  bot.openTrades.push(t);botLog(`SHORT ${sym} @$${price.toFixed(2)} | size:$${usd.toFixed(2)} | lev:${lev}x | SL:${slPct}% ($${sl.toFixed(2)}) | TP:$${tp.toFixed(2)} | ${council.agreeing}/${council.total} agents | conf:${conf}%`);return t;
 }
 function closeTrade(t,price,reason){
   t.status='closed';t.exitPrice=price;t.closeTime=new Date().toISOString();t.reason=reason;
@@ -586,21 +589,46 @@ async function tick(){
         if(council.decision==='hold')continue;
         if(council.confidence<50)continue;
 
-        // Position sizing
+        // Auto-leverage calculation: tighter SL = higher leverage for same risk
+        const slDistPct=(atr*bot.slATR)/price*100; // SL distance as % of price
+        let autoLev=1;
+        if(bot.tradingType!=='spot'){
+          // Optimal leverage = target risk% / SL distance%
+          // e.g., if risk is 2% and SL is 0.5% away, use 4x leverage
+          autoLev=Math.max(1,Math.min(bot.leverage,Math.round(bot.riskPct/slDistPct)));
+          // Cap at user's max leverage setting
+          autoLev=Math.min(autoLev,bot.leverage);
+        }
+
+        // Position sizing with auto-leverage
         const riskUSD=bal*(bot.riskPct/100);const slDist=atr*bot.slATR;
-        const posUSD=Math.min(riskUSD/(slDist/price),bal*0.15);
+        const posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
         if(posUSD<10)continue;
         const sl=council.decision==='buy'?price-slDist:price+slDist;
         const tp=council.decision==='buy'?price+atr*bot.tpATR:price-atr*bot.tpATR;
+        const slPct=((slDist/price)*100).toFixed(2);
 
         // Execute
         if(bot.mode==='paper'){
-          if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,bot.tradingType==='spot'?'spot':'spot');
-          else if(council.decision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council);
+          if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,'spot',autoLev);
+          else if(council.decision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council,autoLev);
         }else{
-          try{await liveOrder(council.decision,sym,(posUSD/price).toFixed(6));
-            bot.openTrades.push({id:crypto.randomUUID().slice(0,8),symbol:sym,side:council.decision,type:bot.tradingType,leverage:bot.tradingType==='futures'?bot.leverage:1,entryPrice:price,qty:posUSD/price,usdAmount:posUSD,margin:posUSD,sl,tp,confidence:council.confidence,agreeing:council.agreeing,openTime:new Date().toISOString(),status:'open',highSince:price,trailingSl:bot.trailingStop?sl:null});
-            botLog(`LIVE ${council.decision.toUpperCase()} ${sym} @$${price.toFixed(2)} | ${council.agreeing}/${council.total} agents`);
+          // LIVE MODE — real orders with fill tracking
+          try{
+            const qty=(posUSD/price).toFixed(6);
+            const orderResult=await liveOrder(council.decision,sym,qty);
+            const orderId=orderResult.orderId;
+            // Fetch actual fill details
+            let fillPrice=price,fillQty=posUSD/price,fillFee=0;
+            try{
+              await new Promise(r=>setTimeout(r,2000)); // wait for fill
+              const fillData=await fetchOrderFill(orderId);
+              if(fillData){fillPrice=fillData.price;fillQty=fillData.qty;fillFee=fillData.fee}
+            }catch{}
+            const realUSD=fillPrice*fillQty;
+            bot.openTrades.push({id:crypto.randomUUID().slice(0,8),orderId,symbol:sym,side:council.decision,type:bot.tradingType,leverage:autoLev,entryPrice:fillPrice,qty:fillQty,usdAmount:realUSD,margin:realUSD/(autoLev>1?autoLev:1),sl,tp,confidence:council.confidence,agreeing:council.agreeing,fee:fillFee,openTime:new Date().toISOString(),status:'open',highSince:fillPrice,trailingSl:bot.trailingStop?sl:null,isLive:true});
+            botLog(`LIVE ${council.decision.toUpperCase()} ${sym} @$${fillPrice.toFixed(2)} | size:$${realUSD.toFixed(2)} | lev:${autoLev}x | SL:${slPct}% | ${council.agreeing}/${council.total} agents | fee:$${fillFee.toFixed(4)}`);
+            saveState();
           }catch(e){botLog(`ORDER ERR ${sym}: ${e.message}`)}
         }
         bot.cooldown[sym]=Date.now();
@@ -609,7 +637,45 @@ async function tick(){
   }catch(e){botLog(`TICK ERROR: ${e.message}`)}
 }
 
+// Fetch real order fill details from KuCoin
+async function fetchOrderFill(orderId){
+  if(!bot.credentials)return null;
+  const{apiKey,apiSecret,passphrase}=bot.credentials;
+  const ep=`/api/v1/orders/${orderId}`;
+  const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+  const d=await safeJSON(r);
+  if(d.code==='200000'&&d.data){
+    return{price:+d.data.dealFunds/(+d.data.dealSize||1),qty:+d.data.dealSize,fee:+d.data.fee||0,filled:d.data.dealSize>0};
+  }
+  return null;
+}
+
+// Fetch real wallet balance for live mode
+let liveBalanceCache={totalUSD:0,updated:0};
+async function fetchLiveBalance(){
+  if(!bot.credentials)return 0;
+  if(Date.now()-liveBalanceCache.updated<15000)return liveBalanceCache.totalUSD; // cache 15s
+  try{
+    const{apiKey,apiSecret,passphrase}=bot.credentials;
+    const ep='/api/v1/accounts?type=trade';
+    const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+    const d=await safeJSON(r);
+    if(d.code!=='200000')return liveBalanceCache.totalUSD;
+    const bals={};
+    for(const a of d.data){const v=parseFloat(a.available);if(v>0)bals[a.currency]=(bals[a.currency]||0)+v}
+    let total=0;
+    const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);
+    const pm={USDT:1,USDC:1};
+    if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;
+    for(const[c,a]of Object.entries(bals))total+=(pm[c]||0)*a;
+    liveBalanceCache={totalUSD:Math.round(total*100)/100,balances:bals,updated:Date.now()};
+    return total;
+  }catch{return liveBalanceCache.totalUSD}
+}
+
+// Track initial live balance for PnL calculation
 function getCurBal(){
+  if(bot.mode==='live')return liveBalanceCache.totalUSD||bot.startBal;
   let b=bot.paperUSD;
   for(const t of bot.openTrades){const a=bot.lastAnalysis[t.symbol];if(!a){b+=t.margin;continue}const dir=t.side==='buy'?1:-1;b+=t.margin+(a.price-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)}
   return b;
@@ -644,14 +710,20 @@ app.post('/api/bot/connect',mw,(req,res)=>{const{apiKey,apiSecret,passphrase}=re
 app.post('/api/bot/start',mw,(req,res)=>{if(bot.running)return res.json({success:true});bot.running=true;botLog(`STARTED — ${bot.mode} | ${bot.symbols.length} coins | ${bot.requiredAgents}/${Object.keys(AGENTS).length} agents needed`);tick();bot.intervalId=setInterval(tick,bot.intervalMs);res.json({success:true})});
 app.post('/api/bot/stop',mw,(req,res)=>{bot.running=false;if(bot.intervalId){clearInterval(bot.intervalId);bot.intervalId=null}botLog('STOPPED');res.json({success:true})});
 
-app.get('/api/bot/status',mw,(req,res)=>{
+app.get('/api/bot/status',mw,async(req,res)=>{
+  // In live mode, fetch real balance
+  if(bot.mode==='live'&&bot.credentials){try{await fetchLiveBalance()}catch{}}
   const bal=getCurBal(),dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0,tot=bot.winCount+bot.lossCount;
+  const liveBal=bot.mode==='live'?liveBalanceCache:{};
   res.json({running:bot.running,mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,leverage:bot.leverage,
     balance:Math.round(bal*100)/100,startBal:bot.startBal,totalPnL:Math.round(bot.totalPnL*100)/100,
     totalPnLPct:bot.startBal>0?Math.round((bal-bot.startBal)/bot.startBal*10000)/100:0,
+    // Real portfolio data (live mode only)
+    liveBalance:liveBal.totalUSD||null,liveBalances:liveBal.balances||null,
+    isLive:bot.mode==='live',
     winCount:bot.winCount,lossCount:bot.lossCount,winRate:tot>0?Math.round(bot.winCount/tot*10000)/100:0,
     drawdown:Math.round(dd*100)/100,requiredAgents:bot.requiredAgents,totalAgents:Object.keys(AGENTS).length,
-    openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;return{...t,currentPrice:cp,unrealizedPnl:Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100}}),
+    openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;const upnl=Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100;return{...t,currentPrice:cp,unrealizedPnl:upnl,slPct:t.sl?((Math.abs(t.entryPrice-t.sl)/t.entryPrice)*100).toFixed(2)+'%':'—'}}),
     recentHistory:bot.history.slice(-30).reverse(),council:bot.lastCouncil,log:bot.log.slice(-50).reverse(),
     hasCredentials:!!bot.credentials,sentiment:sentimentCache,newsOverall:newsCache.overall,newsSentiment:newsCache.sentiment,recentNews:(newsCache.articles||[]).slice(0,15),
     settings:{riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents}
