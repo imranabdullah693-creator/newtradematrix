@@ -395,15 +395,17 @@ function councilVote(a,requiredAgree=4){
   const adjBuyScore=buyScore+buyBonus;
   const adjSellScore=sellScore+sellBonus;
 
-  // Threshold: need at least 50% of weighted score (10 out of 20)
-  // AND at least 2 Tier 1 agents must agree (anti-manipulation gate)
-  const weightThreshold=Math.max(8,requiredAgree*2.5); // scales with settings
-  const t1Required=2; // minimum Tier 1 agents needed
+  // SIMPLIFIED GATES:
+  // Gate 1: Weighted score threshold (lower = more trades)
+  const weightThreshold=Math.max(6,requiredAgree*2); // e.g., 4 agents = need 8 pts
+  // Gate 2: At least 1 Tier 1 agent must agree (anti-manipulation)
+  const t1Required=1;
 
   let decision='hold',conf=0,agreeing=0;
 
-  const buyMet=adjBuyScore>=weightThreshold&&buyT1>=t1Required&&buys.length>=requiredAgree;
-  const sellMet=adjSellScore>=weightThreshold&&sellT1>=t1Required&&sells.length>=requiredAgree;
+  // Primary: weighted score meets threshold + at least 1 T1 agrees
+  const buyMet=adjBuyScore>=weightThreshold&&buyT1>=t1Required;
+  const sellMet=adjSellScore>=weightThreshold&&sellT1>=t1Required;
 
   if(buyMet&&sellMet){
     if(adjSellScore>adjBuyScore||(adjSellScore===adjBuyScore&&sellWeightedConf>=buyWeightedConf)){decision='sell';conf=sellWeightedConf;agreeing=sells.length}
@@ -411,18 +413,17 @@ function councilVote(a,requiredAgree=4){
   }else if(buyMet){decision='buy';conf=buyWeightedConf;agreeing=buys.length}
   else if(sellMet){decision='sell';conf=sellWeightedConf;agreeing=sells.length}
 
-  // Bonus for overwhelming agreement
+  // Bonus for strong agreement
   if(agreeing>=8)conf=Math.min(conf+20,100);
   else if(agreeing>=7)conf=Math.min(conf+15,100);
   else if(agreeing>=6)conf=Math.min(conf+10,100);
+  else if(agreeing>=5)conf=Math.min(conf+5,100);
 
-  // Why was it blocked (for logging)
+  // Block reason logging
   let blockReason='';
   if(decision==='hold'){
-    if(buys.length>=requiredAgree&&buyT1<t1Required)blockReason=`Buy blocked: only ${buyT1} Tier 1 agents agree (need ${t1Required})`;
-    else if(sells.length>=requiredAgree&&sellT1<t1Required)blockReason=`Sell blocked: only ${sellT1} Tier 1 agents agree (need ${t1Required})`;
-    else if(buys.length>=requiredAgree&&adjBuyScore<weightThreshold)blockReason=`Buy blocked: weighted score ${adjBuyScore}/${weightThreshold} (too many low-tier votes)`;
-    else if(sells.length>=requiredAgree&&adjSellScore<weightThreshold)blockReason=`Sell blocked: weighted score ${adjSellScore}/${weightThreshold} (too many low-tier votes)`;
+    if((buys.length>=3||sells.length>=3)&&buyT1<t1Required&&sellT1<t1Required)blockReason=`Blocked: no Tier 1 agent agrees (anti-manipulation)`;
+    else if(adjBuyScore>=4||adjSellScore>=4)blockReason=`Hold: buy ${adjBuyScore}pts / sell ${adjSellScore}pts (need ${weightThreshold})`;
   }
 
   return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,
@@ -546,16 +547,26 @@ async function multiTimeframeAnalysis(sym){
 }
 
 // ═══ BOT TICK ═══
+let tickIndex=0; // rotate through symbols to avoid rate limits
 async function tick(){
   try{
     await fetchNews();
-    for(const sym of bot.symbols){
+    // Only scan 8 coins per tick to avoid KuCoin rate limits (30 coins / 8 = ~4 ticks to scan all)
+    const batchSize=8;
+    const batch=[];
+    for(let i=0;i<batchSize&&i<bot.symbols.length;i++){
+      batch.push(bot.symbols[(tickIndex+i)%bot.symbols.length]);
+    }
+    tickIndex=(tickIndex+batchSize)%bot.symbols.length;
+    botLog(`Scanning: ${batch.map(s=>s.replace('-USDT','')).join(', ')} (batch ${Math.ceil(tickIndex/batchSize)}/${Math.ceil(bot.symbols.length/batchSize)})`);
+
+    for(const sym of batch){
       try{
         const a=await multiTimeframeAnalysis(sym);
         bot.lastAnalysis[sym]=a;
         const{price,atr}=a;if(!price||!atr)continue;
 
-        // Check open trades
+        // Check open trades (check ALL open trades, not just this batch)
         for(const t of[...bot.openTrades]){
           if(t.symbol!==sym)continue;
           if(bot.trailingStop&&t.trailingSl!==null){
@@ -573,8 +584,8 @@ async function tick(){
         const dd=((bot.peakBal-bal)/bot.peakBal)*100;
         if(dd>=bot.maxDrawdownPct)continue;
 
-        // Limits
-        if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<600000)continue;
+        // Limits — reduced cooldown to 5 min
+        if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000)continue;
         if(bot.openTrades.length>=bot.maxOpenTrades)continue;
         if(bot.openTrades.filter(t=>t.symbol===sym).length>=2)continue;
 
@@ -587,7 +598,7 @@ async function tick(){
           botLog(`${sym.replace('-USDT','')} ${council.buyCount}buy(${council.buyScore}pts)/${council.sellCount}sell(${council.sellScore}pts) T1:${council.buyT1}b/${council.sellT1}s — hold`);
         }
         if(council.decision==='hold')continue;
-        if(council.confidence<50)continue;
+        if(council.confidence<40)continue;
 
         // Auto-leverage calculation: tighter SL = higher leverage for same risk
         const slDistPct=(atr*bot.slATR)/price*100; // SL distance as % of price
@@ -632,7 +643,9 @@ async function tick(){
           }catch(e){botLog(`ORDER ERR ${sym}: ${e.message}`)}
         }
         bot.cooldown[sym]=Date.now();
-      }catch(e){/* skip coin */}
+      }catch(e){botLog(`${sym.replace('-USDT','')} error: ${e.message}`)}
+      // Small delay between coins to avoid rate limits
+      await new Promise(r=>setTimeout(r,1500));
     }
   }catch(e){botLog(`TICK ERROR: ${e.message}`)}
 }
@@ -694,7 +707,7 @@ async function backtest(sym,reqAgents=4,periods=500){
     if(bal>peak)peak=bal;const dd=((peak-bal)/peak)*100;if(dd>maxDD)maxDD=dd;
     if(open)continue;
     const council=councilVote(a,reqAgents);
-    if(council.decision==='hold'||council.confidence<50)continue;
+    if(council.decision==='hold'||council.confidence<40)continue;
     const rUSD=bal*0.02,slD=atr*1.5,cost=Math.min(rUSD/(slD/price),bal*0.25);if(cost<10)continue;
     const qty=cost/price;
     bal-=cost;open={side:council.decision,symbol:sym,entry:price,qty,cost,sl:council.decision==='buy'?price-slD:price+slD,tp:council.decision==='buy'?price+atr*3:price-atr*3,conf:council.confidence,agreeing:council.agreeing};
