@@ -85,7 +85,7 @@
   <div class="mn">
     <!-- OVERVIEW -->
     <div class="pg act" id="pg-overview">
-      <div class="warn">⚠ 8 specialist agents (including Quant AI) vote on every trade. The bot only trades when enough experts agree. Runs 24/7 even when your device is off.</div>
+      <div class="warn">⚠ 9 specialist agents (inc. Quant AI + ATR Volatility) analyze 3 timeframes and vote on every trade. The bot only trades when enough experts agree. Runs 24/7 even when your device is off.</div>
       <div class="cd" id="wallet-card"><div class="ct">💰 KuCoin Wallet</div><div id="wallet-content" style="color:var(--t3);font-size:11px">Loading...</div></div>
       <div class="sr" id="stats"></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
@@ -94,7 +94,7 @@
       <div class="cd"><div class="ct">📜 Log</div><div class="log" id="logbox">Bot not started.</div></div>
     </div>
     <!-- COUNCIL -->
-    <div class="pg" id="pg-council"><div class="cd"><div class="ct">⚖ Agent Council — Real-time Votes</div><p style="font-size:10px;color:var(--t2);margin-bottom:12px">7 specialist bots each analyze different indicators and vote. Trade executes only when enough agree.</p><div class="fr"><select class="fs" id="council-sym"></select><button class="btn bb" onclick="showCouncil()">Show Votes</button></div><div id="council-result"></div></div></div>
+    <div class="pg" id="pg-council"><div class="cd"><div class="ct">⚖ Agent Council — Real-time Votes</div><p style="font-size:10px;color:var(--t2);margin-bottom:12px">9 specialist agents each analyze 3 timeframes (4H, 1H, 15M) using different indicators. Trade executes only when enough agents agree.</p><div class="fr"><select class="fs" id="council-sym"></select><button class="btn bb" onclick="showCouncil()">Show Votes</button></div><div id="council-result"></div></div></div>
     <!-- TRADES -->
     <div class="pg" id="pg-trades"><div class="cd"><div class="ct">📊 History</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Agents</th><th>Why</th></tr></thead><tbody id="htb"><tr><td colspan="8" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr></tbody></table></div></div></div>
     <!-- NEWS -->
@@ -109,7 +109,7 @@
     <div class="pg" id="pg-settings"><div class="cd"><div class="ct">⚙ Settings</div>
       <div class="fr"><span class="fl">Mode</span><select class="fs" id="smode"><option value="paper">Paper</option><option value="live">Live</option></select></div>
       <div class="fr"><span class="fl">Type</span><select class="fs" id="stype"><option value="spot">Spot</option><option value="futures">Futures</option><option value="combined" selected>Combined</option></select></div>
-      <div class="fr"><span class="fl">Agents needed</span><select class="fs" id="sreq"><option value="3">3 of 9 (aggressive)</option><option value="4" selected>4 of 9 (balanced)</option><option value="5">5 of 9 (conservative)</option><option value="6">6 of 9 (strict)</option><option value="7">7 of 9 (strict)</option><option value="8">8 of 9 (strict)</option><option value="9">9 of 9 (unanimous)</option></select></div>
+      <div class="fr"><span class="fl">Agents needed</span><select class="fs" id="sreq"><option value="3">3 of 9 (aggressive)</option><option value="4" selected>4 of 9 (balanced)</option><option value="5">5 of 9 (conservative)</option><option value="6">6 of 9 (strict)</option><option value="7">7 of 9 (very strict)</option><option value="8">8 of 9 (near unanimous)</option><option value="9">9 of 9 (unanimous)</option></select></div>
       <div class="fr"><span class="fl">Risk/Trade %</span><input class="fi" id="srisk" type="number" value="2" min="0.5" max="5" step="0.5"/></div>
       <div class="fr"><span class="fl">Max DD %</span><input class="fi" id="sdd" type="number" value="15" min="5" max="30"/></div>
       <div class="fr"><span class="fl">SL (ATR x)</span><input class="fi" id="ssl" type="number" value="1.5" min="0.5" max="5" step="0.1"/></div>
@@ -200,21 +200,57 @@ async function refreshNews(){const d=await api('/api/bot/news');if(d.error||!d.a
 }
 
 // Council
+// Timeframe summary generator
+function tfSummary(tf){
+  if(!tf)return'No data';
+  let parts=[];
+  if(tf.condition.includes('strong_bullish'))parts.push('Strong uptrend in progress');
+  else if(tf.condition.includes('bullish'))parts.push('Uptrend — buyers in control');
+  else if(tf.condition.includes('mildly_bullish'))parts.push('Slight bullish lean');
+  else if(tf.condition.includes('strong_bearish'))parts.push('Strong downtrend in progress');
+  else if(tf.condition.includes('bearish'))parts.push('Downtrend — sellers in control');
+  else if(tf.condition.includes('mildly_bearish'))parts.push('Slight bearish lean');
+  else if(tf.condition==='sideways')parts.push('Choppy sideways action — no clear direction');
+  else parts.push('Neutral — waiting for direction');
+  if(tf.rsi!==null&&tf.rsi!==undefined){
+    if(tf.rsi>70)parts.push('RSI at '+tf.rsi.toFixed(0)+' (overbought — price may pull back)');
+    else if(tf.rsi>60)parts.push('RSI at '+tf.rsi.toFixed(0)+' (strong momentum)');
+    else if(tf.rsi<30)parts.push('RSI at '+tf.rsi.toFixed(0)+' (oversold — bounce likely)');
+    else if(tf.rsi<40)parts.push('RSI at '+tf.rsi.toFixed(0)+' (weak momentum)');
+    else parts.push('RSI at '+tf.rsi.toFixed(0)+' (neutral zone)');
+  }
+  if(tf.macdHist!==null&&tf.macdHist!==undefined){
+    if(tf.macdHist>0)parts.push('MACD positive — bullish momentum');
+    else parts.push('MACD negative — bearish momentum');
+  }
+  if(tf.ema9&&tf.ema21){
+    if(tf.ema9>tf.ema21)parts.push('Short-term EMA above long-term (price trending up)');
+    else parts.push('Short-term EMA below long-term (price trending down)');
+  }
+  return parts.join('. ')+'.';
+}
+
 async function showCouncil(){const sym=document.getElementById('council-sym').value;const box=document.getElementById('council-result');box.innerHTML='<span style="color:var(--am)">Analyzing 3 timeframes + consulting 9 agents...</span>';
   const d=await api('/api/bot/analysis/'+sym);if(d.error){box.innerHTML='<span style="color:var(--re)">'+d.error+'</span>';return}
   const c=d.council,a=d.analysis,total=c.total||9,holds=total-c.buyCount-c.sellCount;
   const htfColor=c.htf&&c.htf.includes('bullish')?'var(--gr)':c.htf&&c.htf.includes('bearish')?'var(--re)':'var(--t3)';
   // HTF display
-  const htfHtml=c.h4?`<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><div class="st" style="padding:8px;flex:1;min-width:100px"><div class="sl">4H Trend</div><div class="sv" style="font-size:11px;color:${c.h4.condition.includes('bull')?'var(--gr)':c.h4.condition.includes('bear')?'var(--re)':'var(--t3)'}">${c.h4.condition}</div><div class="ss">RSI: ${c.h4.rsi?.toFixed(0)||'—'} | MACD: ${c.h4.macdHist?.toFixed(2)||'—'}</div></div><div class="st" style="padding:8px;flex:1;min-width:100px"><div class="sl">1H Trend</div><div class="sv" style="font-size:11px;color:${c.h1.condition.includes('bull')?'var(--gr)':c.h1.condition.includes('bear')?'var(--re)':'var(--t3)'}">${c.h1.condition}</div><div class="ss">RSI: ${c.h1.rsi?.toFixed(0)||'—'} | MACD: ${c.h1.macdHist?.toFixed(2)||'—'}</div></div><div class="st" style="padding:8px;flex:1;min-width:100px"><div class="sl">15M (Entry)</div><div class="sv" style="font-size:11px;color:${a.condition.includes('bull')?'var(--gr)':a.condition.includes('bear')?'var(--re)':'var(--t3)'}">${a.condition}</div><div class="ss">RSI: ${a.rsi?.toFixed(0)||'—'} | MACD: ${a.macdHist?.toFixed(2)||'—'}</div></div><div class="st" style="padding:8px;flex:1;min-width:100px"><div class="sl">HTF Bias</div><div class="sv" style="font-size:11px;color:${htfColor}">${(c.htf||'neutral').replace(/_/g,' ')}</div><div class="ss">${c.htfNote||''}</div></div></div>`:'';
+  const s4h=c.h4?tfSummary(c.h4,'4H'):'No 4H data';
+  const s1h=c.h1?tfSummary(c.h1,'1H'):'No 1H data';
+  const s15m=tfSummary({condition:a.condition,rsi:a.rsi,macdHist:a.macdHist,ema9:a.ema9,ema21:a.ema21},'15M');
+  const htfHtml=c.h4?`<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"><div class="st" style="padding:10px;border-left:3px solid ${c.h4.condition.includes('bull')?'var(--gr)':c.h4.condition.includes('bear')?'var(--re)':'var(--b1)'}"><div class="sl" style="margin-bottom:4px">4-HOUR (Big Picture)</div><div style="font-size:11px;color:var(--t1);line-height:1.6">${s4h}</div></div><div class="st" style="padding:10px;border-left:3px solid ${c.h1.condition.includes('bull')?'var(--gr)':c.h1.condition.includes('bear')?'var(--re)':'var(--b1)'}"><div class="sl" style="margin-bottom:4px">1-HOUR (Confirmation)</div><div style="font-size:11px;color:var(--t1);line-height:1.6">${s1h}</div></div><div class="st" style="padding:10px;border-left:3px solid ${a.condition.includes('bull')?'var(--gr)':a.condition.includes('bear')?'var(--re)':'var(--b1)'}"><div class="sl" style="margin-bottom:4px">15-MIN (Entry Timing)</div><div style="font-size:11px;color:var(--t1);line-height:1.6">${s15m}</div></div><div class="st" style="padding:10px;background:${htfColor==='var(--gr)'?'var(--gd)':htfColor==='var(--re)'?'var(--rd)':'var(--bg2)'}"><div class="sl" style="margin-bottom:4px">OVERALL HTF BIAS</div><div style="font-size:13px;font-weight:700;font-family:var(--mono);color:${htfColor}">${(c.htf||'neutral').replace(/_/g,' ').toUpperCase()}</div><div style="font-size:10px;color:var(--t2);margin-top:2px">${c.htfNote||'No strong bias from higher timeframes'}</div></div></div>`:'';
   box.innerHTML=htfHtml+`<div style="text-align:center;margin:8px 0;padding:16px;background:var(--bg2);border-radius:8px"><div style="font-size:28px;font-weight:700;font-family:var(--mono);color:${c.decision==='buy'?'var(--gr)':c.decision==='sell'?'var(--re)':'var(--t3)'}">${c.decision.toUpperCase()}</div><div style="font-size:12px;color:var(--t2);margin-top:4px">${c.buyCount} BUY · ${c.sellCount} SELL · ${holds} HOLD</div><div style="font-size:14px;margin-top:6px;font-family:var(--mono);color:${c.confidence>=60?'var(--gr)':c.confidence>=40?'var(--am)':'var(--t3)'}">Confidence: ${c.confidence}%</div><div style="font-size:10px;color:var(--t3);margin-top:4px">Need ${c.buyReq||4} to buy · ${c.sellReq||4} to sell</div></div><div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">${Object.entries(c.votes).map(([name,v])=>`<div style="background:var(--bg2);border-radius:6px;padding:10px 12px;border-left:3px solid ${v.vote==='buy'?'var(--gr)':v.vote==='sell'?'var(--re)':'var(--b1)'}"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><span style="font-weight:600;font-size:11px;color:var(--t1)">${name.replace(/_/g,' ').toUpperCase()}</span><span style="display:flex;align-items:center;gap:6px"><span class="conf-bar" style="width:50px"><span class="conf-fill" style="width:${v.confidence}%;background:${v.confidence>=60?'var(--gr)':v.confidence>=40?'var(--am)':'var(--t3)'}"></span></span><span style="font-family:var(--mono);font-size:11px;font-weight:700;color:${v.vote==='buy'?'var(--gr)':v.vote==='sell'?'var(--re)':'var(--t3)'}">${v.vote.toUpperCase()} ${v.confidence}%</span></span></div><div style="font-size:10px;color:var(--t2);line-height:1.5">${v.reason}</div></div>`).join('')}</div>`;}
 
 
 // Analysis
-async function doAnalysis(){const sym=document.getElementById('asym').value,box=document.getElementById('ares');box.innerHTML='<span style="color:var(--am)">Analyzing...</span>';
+async function doAnalysis(){const sym=document.getElementById('asym').value,box=document.getElementById('ares');box.innerHTML='<span style="color:var(--am)">Analyzing 3 timeframes...</span>';
   const d=await api('/api/bot/analysis/'+sym);if(d.error){box.innerHTML='<span style="color:var(--re)">'+d.error+'</span>';return}
   const a=d.analysis,c=d.council;
-  box.innerHTML=`<div class="sr" style="margin:10px 0">${[['Price','$'+a.price?.toFixed(2)],['RSI',a.rsi?.toFixed(1)],['MACD',a.macdHist?.toFixed(3)],['ADX',a.adx?.toFixed(1)],['VWAP','$'+a.vwap?.toFixed(2)],['Support','$'+a.support?.toFixed(2)],['Resist','$'+a.resistance?.toFixed(2)],['OBV',a.obvTrend],['Volume',a.volTrend],['F&G',a.sentiment?.value+' '+a.sentiment?.label],['News',a.news?.coin?.bias||'—'],['Condition',a.condition]].map(([l,v])=>`<div class="st"><div class="sl">${l}</div><div class="sv" style="font-size:12px">${v||'—'}</div></div>`).join('')}</div>
-  <div style="text-align:center;margin:10px 0;padding:12px;background:var(--bg2);border-radius:6px"><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:${c.decision==='buy'?'var(--gr)':c.decision==='sell'?'var(--re)':'var(--t3)'}">${c.decision.toUpperCase()}</div><div style="font-size:10px;color:var(--t2)">${c.buyCount} buy · ${c.sellCount} sell · conf: ${c.confidence}%</div></div>`;
+  const htfBias=c.htf||'neutral';const htfC=htfBias.includes('bull')?'var(--gr)':htfBias.includes('bear')?'var(--re)':'var(--t3)';
+  // Timeframe summaries
+  const tfSum=c.h4?`<div style="margin-bottom:12px"><div class="ct">Timeframe Analysis</div><div style="display:flex;flex-direction:column;gap:6px"><div class="st" style="padding:8px;border-left:3px solid ${c.h4.condition.includes('bull')?'var(--gr)':c.h4.condition.includes('bear')?'var(--re)':'var(--b1)'}"><div class="sl">4H</div><div style="font-size:10px;color:var(--t1)">${tfSummary(c.h4)}</div></div><div class="st" style="padding:8px;border-left:3px solid ${c.h1.condition.includes('bull')?'var(--gr)':c.h1.condition.includes('bear')?'var(--re)':'var(--b1)'}"><div class="sl">1H</div><div style="font-size:10px;color:var(--t1)">${tfSummary(c.h1)}</div></div><div class="st" style="padding:8px;border-left:3px solid ${a.condition.includes('bull')?'var(--gr)':a.condition.includes('bear')?'var(--re)':'var(--b1)'}"><div class="sl">15M</div><div style="font-size:10px;color:var(--t1)">${tfSummary({condition:a.condition,rsi:a.rsi,macdHist:a.macdHist,ema9:a.ema9,ema21:a.ema21})}</div></div></div></div>`:'';
+  box.innerHTML=tfSum+`<div class="sr" style="margin:10px 0">${[['Price','$'+a.price?.toFixed(2)],['RSI',a.rsi?.toFixed(1)],['MACD',a.macdHist?.toFixed(3)],['ADX',a.adx?.toFixed(1)],['VWAP','$'+a.vwap?.toFixed(2)],['Support','$'+a.support?.toFixed(2)],['Resist','$'+a.resistance?.toFixed(2)],['OBV',a.obvTrend],['Volume',a.volTrend],['F&G',a.sentiment?.value+' '+a.sentiment?.label],['News',a.news?.coin?.bias||'—'],['HTF Bias','<span style="color:'+htfC+'">'+htfBias.replace(/_/g,' ')+'</span>']].map(([l,v])=>`<div class="st"><div class="sl">${l}</div><div class="sv" style="font-size:12px">${v||'—'}</div></div>`).join('')}</div>
+  <div style="text-align:center;margin:10px 0;padding:12px;background:var(--bg2);border-radius:6px"><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:${c.decision==='buy'?'var(--gr)':c.decision==='sell'?'var(--re)':'var(--t3)'}">${c.decision.toUpperCase()}</div><div style="font-size:10px;color:var(--t2)">${c.buyCount} buy · ${c.sellCount} sell · conf: ${c.confidence}% · HTF: ${htfBias.replace(/_/g,' ')}</div></div>`;
 }
 
 // Backtest
