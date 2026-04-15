@@ -50,60 +50,52 @@ async function getSentiment(){
 async function fetchNews(){
   if(Date.now()-newsCache.updated<60000&&newsCache.updated>0)return newsCache;
   try{
-    // Crypto-specific news
-    const r1=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');
-    const d1=await safeJSON(r1);
-    let articles=[];
-    if(d1.Data)articles=d1.Data.slice(0,20).map(a=>({title:a.title,source:a.source,url:a.url,time:a.published_on*1000,body:(a.body||'').slice(0,200),categories:(a.categories||'').toLowerCase(),score:scoreText(a.title+' '+(a.body||'').slice(0,300)),type:'crypto'}));
+    let articles=[];const seen=new Set();
+    const MB=['rate cut','dovish','stimulus','qe','inflation cool','soft landing','peace','ceasefire','trade deal','dollar weak','dxy down','fed pause','liquidity','risk on','recovery','growth','surplus','jobs added','strong earnings','bull market','rally','tech boom','green energy','oil drop','de-escalation','diplomatic','agreement'];
+    const MR=['rate hike','hawkish','taper','qt','recession','inflation hot','hard landing','war','attack','missile','invasion','nuclear','sanction','tariff','dollar strong','dxy up','fed tighten','risk off','default','debt ceiling','shutdown','embargo','crisis','collapse','crash','layoff','unemployment','bankruptcy','downgrade','bear market','pandemic','outbreak','conflict','escalation','strike','coup','protest','unrest','famine','drought'];
 
-    // Macro/World news that affects crypto (Fed, dollar, economy, geopolitics)
-    try{
-      const macroFeeds=['https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=regulation,trading,blockchain,market&sortOrder=latest'];
-      // Also search for macro keywords in the existing articles + add macro keyword scoring
-      const MACRO_BULL=['rate cut','dovish','stimulus','qe','money printing','inflation cool','soft landing','peace','trade deal','dollar weak','dxy down','fed pause','liquidity','risk on'];
-      const MACRO_BEAR=['rate hike','hawkish','taper','qt','recession','inflation hot','hard landing','war','sanction','tariff','dollar strong','dxy up','fed tighten','risk off','default','debt ceiling','shutdown'];
+    function classify(title,body,source,url,time){
+      if(!title||seen.has(title))return null;seen.add(title);
+      const txt=(title+' '+(body||'')).toLowerCase();
+      let s=scoreText(title+' '+(body||'').slice(0,300)),ms=0;
+      for(const w of MB)if(txt.includes(w))ms+=2;
+      for(const w of MR)if(txt.includes(w))ms-=2;
+      const worldKeys=['fed','federal reserve','central bank','interest rate','inflation','gdp','economy','geopolit','war','iran','israel','china','russia','ukraine','trump','biden','congress','senate','tariff','sanction','opec','oil','gold','dollar','treasury','bond','imf','world bank','nato','military','attack','election','trade war','debt','deficit','employment','jobs','cpi','ppi','fomc','g7','g20','brics','eu ','european','japan','korea','india','pakistan','middle east','gaza','taiwan','syria','yemen','africa','climate','energy','commodity','wheat','food','shipping','suez','semiconductor','chip','ai regulation'];
+      const isWorld=worldKeys.some(w=>txt.includes(w));
+      s+=ms;
+      return{title,source,url,time,body:(body||'').slice(0,200),score:s,macroScore:ms,type:isWorld||ms!==0?'world':'crypto'};
+    }
 
-      // Score existing articles for macro impact too
-      articles.forEach(a=>{
-        const txt=(a.title+' '+(a.body||'')).toLowerCase();
-        let macroScore=0;
-        for(const w of MACRO_BULL)if(txt.includes(w))macroScore+=2;
-        for(const w of MACRO_BEAR)if(txt.includes(w))macroScore-=2;
-        a.macroScore=macroScore;
-        a.score+=macroScore; // combine with regular score
-        if(macroScore!==0)a.type='macro';
-      });
+    // 1. Crypto news
+    try{const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');const d=await safeJSON(r);if(d.Data)for(const a of d.Data.slice(0,25)){const x=classify(a.title,a.body,a.source,a.url,a.published_on*1000);if(x)articles.push(x)}}catch{}
 
-      // Fetch additional general financial news
-      const r2=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=regulation,fiat,exchange&sortOrder=latest');
-      const d2=await safeJSON(r2);
-      if(d2.Data){
-        const macroArticles=d2.Data.slice(0,15).map(a=>{
-          const txt=(a.title+' '+(a.body||'')).toLowerCase();
-          let ms=0;
-          for(const w of MACRO_BULL)if(txt.includes(w))ms+=2;
-          for(const w of MACRO_BEAR)if(txt.includes(w))ms-=2;
-          return{title:a.title,source:a.source,url:a.url,time:a.published_on*1000,body:(a.body||'').slice(0,200),categories:(a.categories||'').toLowerCase(),score:scoreText(a.title+' '+(a.body||'').slice(0,300))+ms,macroScore:ms,type:ms!==0?'macro':'crypto'};
-        });
-        // Merge and deduplicate by title
-        const existing=new Set(articles.map(a=>a.title));
-        for(const a of macroArticles)if(!existing.has(a.title)){articles.push(a);existing.add(a.title)}
-      }
-    }catch(e){/* macro fetch optional */}
+    // 2. Regulation/Fiat news
+    try{const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=regulation,fiat,exchange,mining&sortOrder=latest');const d=await safeJSON(r);if(d.Data)for(const a of d.Data.slice(0,15)){const x=classify(a.title,a.body,a.source,a.url,a.published_on*1000);if(x)articles.push(x)}}catch{}
 
-    // Sort by time
+    // 3. World news from RSS feeds
+    const feeds=[
+      'https://feeds.bbci.co.uk/news/business/rss.xml',
+      'https://feeds.bbci.co.uk/news/world/rss.xml',
+      'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+      'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml',
+      'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
+      'https://feeds.reuters.com/reuters/businessNews',
+      'https://feeds.reuters.com/reuters/worldNews',
+      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB'
+    ];
+    for(const feed of feeds){try{const r=await fetch('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(feed));const d=await safeJSON(r);if(d.items)for(const i of d.items.slice(0,6)){const t=i.pubDate?new Date(i.pubDate).getTime():Date.now();const x=classify(i.title,i.description||'',d.feed?.title||'News',i.link,t);if(x)articles.push(x)}}catch{}}
+
     articles.sort((a,b)=>b.time-a.time);
 
     // Coin sentiment
     const cs={};
-    for(const[sym,name]of Object.entries(COINS_MAP)){const rel=articles.filter(a=>(a.title+' '+a.body+' '+a.categories).toLowerCase().includes(name)||(a.title+' '+a.categories).toLowerCase().includes(sym.toLowerCase()));if(rel.length)cs[sym]={score:Math.round(rel.reduce((s,a)=>s+a.score,0)/rel.length*100)/100,n:rel.length,bias:rel.reduce((s,a)=>s+a.score,0)/rel.length>0.5?'bullish':rel.reduce((s,a)=>s+a.score,0)/rel.length<-0.5?'bearish':'neutral'}}
+    for(const[sym,name]of Object.entries(COINS_MAP)){const rel=articles.filter(a=>(a.title+' '+a.body).toLowerCase().includes(name)||a.title.toLowerCase().includes(sym.toLowerCase()));if(rel.length)cs[sym]={score:Math.round(rel.reduce((s,a)=>s+a.score,0)/rel.length*100)/100,n:rel.length,bias:rel.reduce((s,a)=>s+a.score,0)/rel.length>0.5?'bullish':rel.reduce((s,a)=>s+a.score,0)/rel.length<-0.5?'bearish':'neutral'}}
 
-    // Overall + macro sentiment
+    const worldA=articles.filter(a=>a.type==='world'),cryptoA=articles.filter(a=>a.type==='crypto');
     const as=articles.reduce((s,a)=>s+a.score,0)/Math.max(articles.length,1);
-    const macroArticles=articles.filter(a=>a.type==='macro');
-    const macroAvg=macroArticles.length?macroArticles.reduce((s,a)=>s+a.score,0)/macroArticles.length:0;
+    const wa=worldA.length?worldA.reduce((s,a)=>s+a.score,0)/worldA.length:0;
 
-    newsCache={articles,sentiment:cs,overall:{score:Math.round(as*100)/100,bias:as>0.3?'bullish':as<-0.3?'bearish':'neutral',macroScore:Math.round(macroAvg*100)/100,macroBias:macroAvg>0.3?'bullish':macroAvg<-0.3?'bearish':'neutral'},updated:Date.now()};
+    newsCache={articles,sentiment:cs,overall:{score:Math.round(as*100)/100,bias:as>0.3?'bullish':as<-0.3?'bearish':'neutral',macroScore:Math.round(wa*100)/100,macroBias:wa>0.3?'bullish':wa<-0.3?'bearish':'neutral',worldCount:worldA.length,cryptoCount:cryptoA.length},updated:Date.now()};
   }catch(e){console.log('News err:',e.message)}
   return newsCache;
 }
@@ -223,30 +215,124 @@ const AGENTS={
     return{vote:'hold',confidence:0,reason:'mid BB ('+Math.round(pos*100)+'%)'};
   },
 
-  // Agent 7: Sentiment & News (including macro)
+  // Agent 7: Sentiment & News (including world/macro)
   sentiment_analyst(a){
-    if(!a.sentiment||!a.news)return{vote:'hold',confidence:0,reason:'no data'};
+    if(!a.sentiment||!a.news)return{vote:'hold',confidence:0,reason:'No sentiment data available'};
     let score=0,reasons=[];
     const fg=a.sentiment.value;
-    if(fg<20){score+=35;reasons.push('extreme fear=buy')}
-    else if(fg<35){score+=20;reasons.push('fear zone')}
-    else if(fg>80){score-=35;reasons.push('extreme greed=sell')}
-    else if(fg>65){score-=20;reasons.push('greed zone')}
+    if(fg<20){score+=35;reasons.push('Extreme fear index ('+fg+') — historically a contrarian buy signal, smart money buys when others panic')}
+    else if(fg<35){score+=20;reasons.push('Fear zone (F&G:'+fg+') — market is scared, potential buying opportunity')}
+    else if(fg>80){score-=35;reasons.push('Extreme greed ('+fg+') — market is euphoric, historically precedes corrections')}
+    else if(fg>65){score-=20;reasons.push('Greed zone (F&G:'+fg+') — caution, market may be overheated')}
+    else{reasons.push('Fear & Greed neutral at '+fg)}
     const cn=a.news.coin;
-    if(cn&&cn.bias==='bullish'){score+=20;reasons.push('coin news+')}
-    if(cn&&cn.bias==='bearish'){score-=20;reasons.push('coin news-')}
+    if(cn&&cn.bias==='bullish'){score+=20;reasons.push('Coin-specific news is bullish ('+cn.n+' articles, score:'+cn.score+')')}
+    if(cn&&cn.bias==='bearish'){score-=20;reasons.push('Coin-specific news is bearish ('+cn.n+' articles, score:'+cn.score+')')}
     const ov=a.news.overall;
-    if(ov&&ov.bias==='bullish'){score+=10;reasons.push('mkt news+')}
-    if(ov&&ov.bias==='bearish'){score-=10;reasons.push('mkt news-')}
-    if(ov&&ov.macroBias==='bullish'){score+=15;reasons.push('macro+')}
-    if(ov&&ov.macroBias==='bearish'){score-=15;reasons.push('macro-')}
-    if(score>=25)return{vote:'buy',confidence:50+Math.min(score-25,35),reason:reasons.join(', ')};
-    if(score<=-25)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-25,35),reason:reasons.join(', ')};
-    return{vote:'hold',confidence:0,reason:'neutral (F&G:'+fg+')'};
+    if(ov&&ov.bias==='bullish'){score+=10;reasons.push('Overall market news positive')}
+    if(ov&&ov.bias==='bearish'){score-=10;reasons.push('Overall market news negative')}
+    if(ov&&ov.macroBias==='bullish'){score+=15;reasons.push('World/macro news bullish — favorable for risk assets')}
+    if(ov&&ov.macroBias==='bearish'){score-=15;reasons.push('World/macro news bearish — risk-off environment')}
+    if(score>=25)return{vote:'buy',confidence:50+Math.min(score-25,35),reason:reasons.join('. ')};
+    if(score<=-25)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-25,35),reason:reasons.join('. ')};
+    return{vote:'hold',confidence:0,reason:reasons.join('. ')};
+  },
+
+  // Agent 8: Quant AI — Statistical analysis, z-score, rate of change, mean reversion
+  quant_ai(a){
+    if(!a.price||!a.ema21||!a.atr||!a.bbUpper||!a.bbLower||a.rsi===null)return{vote:'hold',confidence:0,reason:'no data'};
+
+    let score=0,reasons=[];
+
+    // Z-score: how many std devs from BB mean
+    const bbMid=a.bbSma||(a.bbUpper+a.bbLower)/2;
+    const bbStd=(a.bbUpper-a.bbLower)/4; // approx 2 std = BB width
+    const zScore=bbStd>0?(a.price-bbMid)/bbStd:0;
+
+    if(zScore<-1.5){score+=30;reasons.push('z-score:'+zScore.toFixed(1)+' (undervalued)')}
+    else if(zScore<-0.8){score+=15;reasons.push('z:'+zScore.toFixed(1))}
+    else if(zScore>1.5){score-=30;reasons.push('z-score:'+zScore.toFixed(1)+' (overvalued)')}
+    else if(zScore>0.8){score-=15;reasons.push('z:'+zScore.toFixed(1))}
+
+    // Rate of change (price vs EMA21)
+    const roc=((a.price-a.ema21)/a.ema21)*100;
+    if(roc<-3){score+=20;reasons.push('ROC:-'+Math.abs(roc).toFixed(1)+'% (oversold vs EMA)')}
+    else if(roc<-1.5){score+=10;reasons.push('ROC:'+roc.toFixed(1)+'%')}
+    else if(roc>3){score-=20;reasons.push('ROC:+'+roc.toFixed(1)+'% (overbought vs EMA)')}
+    else if(roc>1.5){score-=10;reasons.push('ROC:+'+roc.toFixed(1)+'%')}
+
+    // RSI divergence detection
+    if(a.rsi>70&&roc<0){score-=15;reasons.push('bearish RSI divergence')}
+    if(a.rsi<30&&roc>0){score+=15;reasons.push('bullish RSI divergence')}
+
+    // Volatility regime (high ATR = mean reversion more likely)
+    const atrPct=(a.atr/a.price)*100;
+    if(atrPct>2&&zScore>1){score-=10;reasons.push('high vol + extended = revert down')}
+    if(atrPct>2&&zScore<-1){score+=10;reasons.push('high vol + depressed = revert up')}
+
+    // Price vs VWAP momentum
+    if(a.vwap){
+      const vwapDist=((a.price-a.vwap)/a.vwap)*100;
+      if(vwapDist<-1){score+=10;reasons.push('below VWAP')}
+      if(vwapDist>1){score-=10;reasons.push('above VWAP')}
+    }
+
+    if(score>=25)return{vote:'buy',confidence:50+Math.min(score-25,40),reason:reasons.join(', ')};
+    if(score<=-25)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-25,40),reason:reasons.join(', ')};
+    if(score>=10)return{vote:'buy',confidence:35,reason:reasons.join(', ')};
+    if(score<=-10)return{vote:'sell',confidence:35,reason:reasons.join(', ')};
+    return{vote:'hold',confidence:0,reason:'quant neutral (z:'+zScore.toFixed(1)+' roc:'+roc.toFixed(1)+'%)'};
+  },
+
+  // Agent 9: ATR Volatility Specialist — volatility breakouts, squeeze, expansion
+  atr_volatility(a){
+    if(!a.atr||!a.price||!a.bbUpper||!a.bbLower)return{vote:'hold',confidence:0,reason:'no ATR data'};
+    const atrPct=(a.atr/a.price)*100;
+    const bbWidth=((a.bbUpper-a.bbLower)/a.bbSma)*100;
+    let score=0,reasons=[];
+
+    // ATR expansion/contraction
+    reasons.push('ATR: $'+a.atr.toFixed(2)+' ('+atrPct.toFixed(2)+'% of price)');
+
+    // Volatility squeeze (low ATR + tight BB = breakout coming)
+    if(atrPct<1&&bbWidth<3){
+      // Squeeze detected — direction from trend
+      if(a.ema9>a.ema21){score+=25;reasons.push('SQUEEZE detected — EMAs bullish, expect upside breakout')}
+      else if(a.ema9<a.ema21){score-=25;reasons.push('SQUEEZE detected — EMAs bearish, expect downside breakout')}
+      else{reasons.push('SQUEEZE detected — waiting for direction')}
+    }
+
+    // High volatility + overextension = mean reversion
+    if(atrPct>3){
+      const bbPos=(a.price-a.bbLower)/(a.bbUpper-a.bbLower);
+      if(bbPos>0.85){score-=30;reasons.push('HIGH volatility + price at top of range — likely pullback')}
+      else if(bbPos<0.15){score+=30;reasons.push('HIGH volatility + price at bottom — likely bounce')}
+      else{reasons.push('HIGH volatility — choppy, be careful')}
+    }
+
+    // ATR relative to price movement
+    if(a.ema9&&a.ema21){
+      const emaDist=Math.abs(a.ema9-a.ema21);
+      const atrRatio=emaDist/a.atr;
+      if(atrRatio>2&&a.ema9>a.ema21){score+=15;reasons.push('strong trend move ('+atrRatio.toFixed(1)+'x ATR separation)')}
+      if(atrRatio>2&&a.ema9<a.ema21){score-=15;reasons.push('strong down move ('+atrRatio.toFixed(1)+'x ATR separation)')}
+    }
+
+    // Normal volatility — use ATR for stop placement quality
+    if(atrPct>=1&&atrPct<=3){
+      reasons.push('normal volatility — good for trading');
+      // In normal vol, follow the trend
+      if(a.condition&&a.condition.includes('bullish')){score+=10;reasons.push('trend is up')}
+      if(a.condition&&a.condition.includes('bearish')){score-=10;reasons.push('trend is down')}
+    }
+
+    if(score>=20)return{vote:'buy',confidence:50+Math.min(score-20,35),reason:reasons.join('. ')};
+    if(score<=-20)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-20,35),reason:reasons.join('. ')};
+    return{vote:'hold',confidence:0,reason:reasons.join('. ')};
   }
 };
 
-// ═══ COUNCIL VOTE (with market-aware asymmetry) ═══
+// ═══ COUNCIL VOTE (fixed: buy and sell are independent) ═══
 function councilVote(a,requiredAgree=4){
   const votes={};
   for(const[name,fn]of Object.entries(AGENTS))votes[name]=fn(a);
@@ -255,22 +341,31 @@ function councilVote(a,requiredAgree=4){
   const buyConf=buys.length?Math.round(buys.reduce((s,[_,v])=>s+v.confidence,0)/buys.length):0;
   const sellConf=sells.length?Math.round(sells.reduce((s,[_,v])=>s+v.confidence,0)/sells.length):0;
 
-  // In bearish conditions, need 1 fewer agent for sells (easier to short)
-  // In bullish conditions, need 1 fewer agent for buys (easier to long)
+  // In bearish conditions, lower sell threshold
   let buyReq=requiredAgree,sellReq=requiredAgree;
   if(a.condition&&a.condition.includes('bearish'))sellReq=Math.max(2,requiredAgree-1);
   if(a.condition&&a.condition.includes('bullish'))buyReq=Math.max(2,requiredAgree-1);
 
   let decision='hold',conf=0,agreeing=0;
-  if(buys.length>=buyReq&&buys.length>sells.length){decision='buy';conf=buyConf;agreeing=buys.length}
-  else if(sells.length>=sellReq&&sells.length>buys.length){decision='sell';conf=sellConf;agreeing=sells.length}
-  // If tied and both meet threshold, go with higher confidence
-  else if(buys.length>=buyReq&&sells.length>=sellReq){
-    if(buyConf>sellConf){decision='buy';conf=buyConf;agreeing=buys.length}
-    else{decision='sell';conf=sellConf;agreeing=sells.length}
+
+  // BUY and SELL are evaluated INDEPENDENTLY
+  // If both meet threshold, higher confidence wins
+  const buyMet=buys.length>=buyReq;
+  const sellMet=sells.length>=sellReq;
+
+  if(buyMet&&sellMet){
+    // Both met — go with higher confidence
+    if(sellConf>=buyConf){decision='sell';conf=sellConf;agreeing=sells.length}
+    else{decision='buy';conf=buyConf;agreeing=buys.length}
+  }else if(buyMet){
+    decision='buy';conf=buyConf;agreeing=buys.length;
+  }else if(sellMet){
+    decision='sell';conf=sellConf;agreeing=sells.length;
   }
 
-  if(agreeing>=6)conf=Math.min(conf+15,100);
+  // Bonus for strong agreement
+  if(agreeing>=7)conf=Math.min(conf+20,100);
+  else if(agreeing>=6)conf=Math.min(conf+15,100);
   else if(agreeing>=5)conf=Math.min(conf+10,100);
 
   return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,buyCount:buys.length,sellCount:sells.length,buyReq,sellReq};
@@ -394,6 +489,10 @@ async function tick(){
         // ═══ COUNCIL VOTE ═══
         const council=councilVote(a,bot.requiredAgents);
         bot.lastCouncil[sym]=council;
+        // Log significant sell signals even if not enough agree yet
+        if(council.sellCount>=2&&council.decision==='hold'){
+          botLog(`${sym.replace('-USDT','')} ${council.buyCount}buy/${council.sellCount}sell (need ${council.sellReq}) — watching`);
+        }
         if(council.decision==='hold')continue;
         if(council.confidence<50)continue;
 
@@ -482,7 +581,7 @@ app.post('/api/bot/settings',mw,(req,res)=>{
   if(s.maxOpenTrades!==undefined)bot.maxOpenTrades=Math.max(1,Math.min(15,+s.maxOpenTrades));
   if(s.leverage!==undefined)bot.leverage=Math.max(1,Math.min(20,+s.leverage));
   if(s.intervalMs!==undefined){bot.intervalMs=Math.max(30000,Math.min(300000,+s.intervalMs));if(bot.running&&bot.intervalId){clearInterval(bot.intervalId);bot.intervalId=setInterval(tick,bot.intervalMs)}}
-  if(s.requiredAgents!==undefined)bot.requiredAgents=Math.max(2,Math.min(7,+s.requiredAgents));
+  if(s.requiredAgents!==undefined)bot.requiredAgents=Math.max(2,Math.min(9,+s.requiredAgents));
   if(s.resetPaper){bot.paperUSD=10000;bot.startBal=10000;bot.peakBal=10000;bot.openTrades=[];bot.history=[];bot.totalPnL=0;bot.winCount=0;bot.lossCount=0;botLog('Paper reset')}
   botLog('Settings updated');saveSettings();saveState();res.json({success:true});
 });
