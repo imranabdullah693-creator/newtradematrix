@@ -89,14 +89,14 @@
       <div class="cd" id="wallet-card"><div class="ct">💰 KuCoin Wallet</div><div id="wallet-content" style="color:var(--t3);font-size:11px">Loading...</div></div>
       <div class="sr" id="stats"></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
-      <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Entry</th><th>Now</th><th>uPnL</th><th>Agents</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="7" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
+      <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Lev</th><th>Entry</th><th>Now</th><th>uPnL</th><th>SL%</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
       <div class="cd"><div class="ct">📰 Latest News</div><div id="news-mini" style="max-height:150px;overflow-y:auto;font-size:10px">Loading...</div></div>
       <div class="cd"><div class="ct">📜 Log</div><div class="log" id="logbox">Bot not started.</div></div>
     </div>
     <!-- COUNCIL -->
     <div class="pg" id="pg-council"><div class="cd"><div class="ct">⚖ Agent Council — Real-time Votes</div><p style="font-size:10px;color:var(--t2);margin-bottom:12px">9 specialist agents each analyze 3 timeframes (4H, 1H, 15M) using different indicators. Trade executes only when enough agents agree.</p><div class="fr"><select class="fs" id="council-sym"></select><button class="btn bb" onclick="showCouncil()">Show Votes</button></div><div id="council-result"></div></div></div>
     <!-- TRADES -->
-    <div class="pg" id="pg-trades"><div class="cd"><div class="ct">📊 History</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Agents</th><th>Why</th></tr></thead><tbody id="htb"><tr><td colspan="8" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr></tbody></table></div></div></div>
+    <div class="pg" id="pg-trades"><div class="cd"><div class="ct">📊 History</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th>Size</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Why</th></tr></thead><tbody id="htb"><tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr></tbody></table></div></div></div>
     <!-- NEWS -->
     <div class="pg" id="pg-news"><div class="cd"><div class="ct">📰 Live News Feed</div><div id="news-full" style="max-height:500px;overflow-y:auto">Loading...</div></div><div class="cd"><div class="ct">Coin Sentiment from News</div><div id="coin-sent" class="sr"></div></div></div>
     <!-- ANALYSIS -->
@@ -157,20 +157,26 @@ async function refresh(){
   document.getElementById('bstart').disabled=d.running;document.getElementById('bstop').disabled=!d.running;
   if(d.sentiment)document.getElementById('sent-txt').textContent='F&G:'+d.sentiment.value;
   const pc=d.totalPnL>=0?'up':'dn',tot=d.winCount+d.lossCount;
+  // Show real portfolio in live mode, paper in demo
+  const balLabel=d.isLive&&d.liveBalance?'Portfolio (Live)':'Balance'+(d.isLive?' (Live)':' (Paper)');
+  const displayBal=d.isLive&&d.liveBalance?d.liveBalance:d.balance;
+  const pnlVal=d.isLive&&d.liveBalance?(d.liveBalance-d.startBal):d.totalPnL;
+  const pnlPct=d.startBal>0?((displayBal-d.startBal)/d.startBal*100):0;
+  const pnlC=pnlVal>=0?'up':'dn';
   document.getElementById('stats').innerHTML=`
-    <div class="st"><div class="sl">Balance</div><div class="sv">$${d.balance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
-    <div class="st"><div class="sl">PnL</div><div class="sv ${pc}">${d.totalPnL>=0?'+':''}$${d.totalPnL.toFixed(2)}</div><div class="ss">${d.totalPnLPct>=0?'+':''}${d.totalPnLPct.toFixed(2)}%</div></div>
+    <div class="st"><div class="sl">${balLabel}</div><div class="sv">$${displayBal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>${d.isLive&&d.liveBalance?'<div class="ss" style="color:var(--gr)">Real wallet balance</div>':''}</div>
+    <div class="st"><div class="sl">PnL</div><div class="sv ${pnlC}">${pnlVal>=0?'+':''}$${pnlVal.toFixed(2)}</div><div class="ss">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</div></div>
     <div class="st"><div class="sl">Win Rate</div><div class="sv" style="color:${d.winRate>=50?'var(--gr)':'var(--re)'}">${d.winRate>0?d.winRate+'%':'—'}</div><div class="ss">${d.winCount}W/${d.lossCount}L</div></div>
     <div class="st"><div class="sl">Drawdown</div><div class="sv ${d.drawdown>5?'dn':''}">${d.drawdown.toFixed(1)}%</div></div>
     <div class="st"><div class="sl">Open</div><div class="sv">${d.openTrades.length}/${d.settings.maxOpenTrades}</div></div>
     <div class="st"><div class="sl">Council</div><div class="sv" style="font-size:11px">${d.requiredAgents}/${d.totalAgents} agents</div></div>`;
   document.getElementById('open-count').textContent=d.openTrades.length;
   const ob=document.getElementById('otb');
-  if(!d.openTrades.length)ob.innerHTML='<tr><td colspan="7" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr>';
-  else ob.innerHTML=d.openTrades.map(t=>`<tr><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}${t.leverage>1?' '+t.leverage+'x':''}</span></td><td>$${t.entryPrice.toFixed(2)}</td><td>$${t.currentPrice.toFixed(2)}</td><td class="${t.unrealizedPnl>=0?'up':'dn'}">${t.unrealizedPnl>=0?'+':''}$${t.unrealizedPnl.toFixed(2)}</td><td>${t.agreeing||'?'}/9</td><td><button class="btn br" style="padding:2px 6px;font-size:8px" onclick="closeTr('${t.id}')">✕</button></td></tr>`).join('');
+  if(!d.openTrades.length)ob.innerHTML='<tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr>';
+  else ob.innerHTML=d.openTrades.map(t=>`<tr><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}</span></td><td style="font-family:var(--mono)">$${(t.usdAmount||0).toFixed(2)}</td><td style="font-family:var(--mono)">${t.leverage||1}x</td><td>$${t.entryPrice.toFixed(2)}</td><td>$${t.currentPrice.toFixed(2)}</td><td class="${t.unrealizedPnl>=0?'up':'dn'}">${t.unrealizedPnl>=0?'+':''}$${t.unrealizedPnl.toFixed(2)}</td><td>${t.slPct||'—'}</td><td><button class="btn br" style="padding:2px 6px;font-size:8px" onclick="closeTr('${t.id}')">✕</button></td></tr>`).join('');
   const hb=document.getElementById('htb');
-  if(!d.recentHistory.length)hb.innerHTML='<tr><td colspan="8" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr>';
-  else hb.innerHTML=d.recentHistory.map(t=>`<tr><td>${new Date(t.closeTime).toLocaleString()}</td><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}</span></td><td>$${t.entryPrice.toFixed(2)}</td><td>$${t.exitPrice.toFixed(2)}</td><td class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td>${t.agreeing||'?'}/9</td><td>${(t.reason||'').replace('_',' ')}</td></tr>`).join('');
+  if(!d.recentHistory.length)hb.innerHTML='<tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr>';
+  else hb.innerHTML=d.recentHistory.map(t=>`<tr><td>${new Date(t.closeTime).toLocaleString()}</td><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}</span></td><td style="font-family:var(--mono)">$${(t.usdAmount||0).toFixed(2)}</td><td style="font-family:var(--mono)">${t.leverage||1}x</td><td>$${t.entryPrice.toFixed(2)}</td><td>$${t.exitPrice.toFixed(2)}</td><td class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td>${(t.reason||'').replace('_',' ')}${t.isLive?' (LIVE)':''}</td></tr>`).join('');
   if(d.log.length)document.getElementById('logbox').innerHTML=d.log.map(l=>`<div><span style="color:var(--t3)">${new Date(l.time).toLocaleTimeString()}</span> ${l.msg}</div>`).join('');
   // Mini news
   if(d.recentNews&&d.recentNews.length)document.getElementById('news-mini').innerHTML=d.recentNews.slice(0,5).map(n=>`<div class="news-item">${n.type==='world'?'<span class="tag" style="background:rgba(179,136,255,0.1);color:var(--pu);margin-right:4px">MACRO</span>':''}<a href="${n.url}" target="_blank" style="color:var(--t1);text-decoration:none">${n.title}</a><span class="news-score" style="background:${n.score>0?'var(--gd)':n.score<0?'var(--rd)':'var(--bg3)'};color:${n.score>0?'var(--gr)':n.score<0?'var(--re)':'var(--t3)'}">${n.score>0?'+':''}${n.score}</span><br/><span class="news-src">${n.source} · ${new Date(n.time).toLocaleTimeString()}</span></div>`).join('');
