@@ -48,11 +48,11 @@ async function getSentiment(){
   return sentimentCache;
 }
 async function fetchNews(){
-  if(Date.now()-newsCache.updated<60000&&newsCache.updated>0)return newsCache;
+  if(Date.now()-newsCache.updated<300000&&newsCache.updated>0)return newsCache;
   try{
     let articles=[];const seen=new Set();
-    const MB=['rate cut','dovish','stimulus','qe','inflation cool','soft landing','peace','ceasefire','trade deal','dollar weak','dxy down','fed pause','liquidity','risk on','recovery','growth','surplus','jobs added','strong earnings','bull market','rally','tech boom','green energy','oil drop','de-escalation','diplomatic','agreement'];
-    const MR=['rate hike','hawkish','taper','qt','recession','inflation hot','hard landing','war','attack','missile','invasion','nuclear','sanction','tariff','dollar strong','dxy up','fed tighten','risk off','default','debt ceiling','shutdown','embargo','crisis','collapse','crash','layoff','unemployment','bankruptcy','downgrade','bear market','pandemic','outbreak','conflict','escalation','strike','coup','protest','unrest','famine','drought'];
+    const MB=['rate cut','dovish','stimulus','qe','inflation cool','soft landing','peace','ceasefire','trade deal','dollar weak','dxy down','fed pause','liquidity','risk on','recovery','growth','surplus','jobs added','strong earnings','bull market','rally','tech boom','oil drop','de-escalation','agreement'];
+    const MR=['rate hike','hawkish','taper','qt','recession','inflation hot','hard landing','war','attack','missile','invasion','nuclear','sanction','tariff','dollar strong','dxy up','fed tighten','risk off','default','debt ceiling','shutdown','embargo','crisis','collapse','crash','layoff','unemployment','bankruptcy','downgrade','bear market','pandemic','outbreak','conflict','escalation','coup','protest','unrest'];
 
     function classify(title,body,source,url,time){
       if(!title||seen.has(title))return null;seen.add(title);
@@ -60,42 +60,36 @@ async function fetchNews(){
       let s=scoreText(title+' '+(body||'').slice(0,300)),ms=0;
       for(const w of MB)if(txt.includes(w))ms+=2;
       for(const w of MR)if(txt.includes(w))ms-=2;
-      const worldKeys=['fed','federal reserve','central bank','interest rate','inflation','gdp','economy','geopolit','war','iran','israel','china','russia','ukraine','trump','biden','congress','senate','tariff','sanction','opec','oil','gold','dollar','treasury','bond','imf','world bank','nato','military','attack','election','trade war','debt','deficit','employment','jobs','cpi','ppi','fomc','g7','g20','brics','eu ','european','japan','korea','india','pakistan','middle east','gaza','taiwan','syria','yemen','africa','climate','energy','commodity','wheat','food','shipping','suez','semiconductor','chip','ai regulation'];
+      const worldKeys=['fed','federal reserve','central bank','interest rate','inflation','gdp','economy','war','iran','israel','china','russia','ukraine','trump','congress','tariff','sanction','opec','oil','gold','dollar','treasury','bond','imf','nato','military','attack','election','debt','employment','jobs','cpi','fomc','brics','middle east','gaza','taiwan'];
       const isWorld=worldKeys.some(w=>txt.includes(w));
       s+=ms;
       return{title,source,url,time,body:(body||'').slice(0,200),score:s,macroScore:ms,type:isWorld||ms!==0?'world':'crypto'};
     }
 
-    // 1. Crypto news
-    try{const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest');const d=await safeJSON(r);if(d.Data)for(const a of d.Data.slice(0,25)){const x=classify(a.title,a.body,a.source,a.url,a.published_on*1000);if(x)articles.push(x)}}catch{}
+    // CryptoCompare only — free unlimited, no rate limits
+    const cats=['','&categories=regulation,fiat,exchange','&categories=mining,trading,technology','&categories=blockchain,business,government'];
+    for(const cat of cats){
+      try{
+        const controller=new AbortController();
+        const timeout=setTimeout(()=>controller.abort(),8000);
+        const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest'+cat,{signal:controller.signal});
+        clearTimeout(timeout);
+        const d=await safeJSON(r);
+        if(d.Data)for(const a of d.Data.slice(0,15)){const x=classify(a.title,a.body,a.source,a.url,a.published_on*1000);if(x)articles.push(x)}
+      }catch(e){console.log('News cat err:',e.message)}
+    }
 
-    // 2. Regulation/Fiat news
-    try{const r=await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=regulation,fiat,exchange,mining&sortOrder=latest');const d=await safeJSON(r);if(d.Data)for(const a of d.Data.slice(0,15)){const x=classify(a.title,a.body,a.source,a.url,a.published_on*1000);if(x)articles.push(x)}}catch{}
-
-    // 3. World news from RSS feeds
-    const feeds=[
-      'https://feeds.bbci.co.uk/news/business/rss.xml',
-      'https://feeds.bbci.co.uk/news/world/rss.xml',
-      'https://www.cnbc.com/id/100003114/device/rss/rss.html',
-      'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml',
-      'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
-      'https://feeds.reuters.com/reuters/businessNews',
-      'https://feeds.reuters.com/reuters/worldNews',
-      'https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB'
-    ];
-    for(const feed of feeds){try{const r=await fetch('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(feed));const d=await safeJSON(r);if(d.items)for(const i of d.items.slice(0,6)){const t=i.pubDate?new Date(i.pubDate).getTime():Date.now();const x=classify(i.title,i.description||'',d.feed?.title||'News',i.link,t);if(x)articles.push(x)}}catch{}}
-
+    if(!articles.length){console.log('No news articles fetched');return newsCache}
     articles.sort((a,b)=>b.time-a.time);
 
-    // Coin sentiment
     const cs={};
     for(const[sym,name]of Object.entries(COINS_MAP)){const rel=articles.filter(a=>(a.title+' '+a.body).toLowerCase().includes(name)||a.title.toLowerCase().includes(sym.toLowerCase()));if(rel.length)cs[sym]={score:Math.round(rel.reduce((s,a)=>s+a.score,0)/rel.length*100)/100,n:rel.length,bias:rel.reduce((s,a)=>s+a.score,0)/rel.length>0.5?'bullish':rel.reduce((s,a)=>s+a.score,0)/rel.length<-0.5?'bearish':'neutral'}}
 
     const worldA=articles.filter(a=>a.type==='world'),cryptoA=articles.filter(a=>a.type==='crypto');
     const as=articles.reduce((s,a)=>s+a.score,0)/Math.max(articles.length,1);
     const wa=worldA.length?worldA.reduce((s,a)=>s+a.score,0)/worldA.length:0;
-
     newsCache={articles,sentiment:cs,overall:{score:Math.round(as*100)/100,bias:as>0.3?'bullish':as<-0.3?'bearish':'neutral',macroScore:Math.round(wa*100)/100,macroBias:wa>0.3?'bullish':wa<-0.3?'bearish':'neutral',worldCount:worldA.length,cryptoCount:cryptoA.length},updated:Date.now()};
+    console.log('News:',articles.length,'articles',worldA.length,'world',cryptoA.length,'crypto');
   }catch(e){console.log('News err:',e.message)}
   return newsCache;
 }
@@ -107,8 +101,8 @@ async function analyze(candles,sym='BTC-USDT'){
   const ema9=TA.ema(c,9),ema21=TA.ema(c,21),ema50=TA.ema(c,50),rsi=TA.rsi(c),atr=TA.atr(h,l,c);
   const macd=TA.macd(c),bb=TA.bollinger(c),sr=TA.stochRSI(c),fib=TA.fibonacci(h,l,c);
   const vwap=TA.vwap(h,l,c,v),adx=TA.adx(h,l,c),obv=TA.obv(c,v);
-  const volTrend=TA.volTrend(v),sentiment=await getSentiment(),news=await fetchNews();
-  const coin=sym.split('-')[0],coinNews=news.sentiment[coin]||{score:0,n:0,bias:'neutral'};
+  const volTrend=TA.volTrend(v),sentiment=sentimentCache,news=newsCache;
+  const coin=sym.split('-')[0],coinNews=(news.sentiment||{})[coin]||{score:0,n:0,bias:'neutral'};
   const adxVal=L(adx.adx),e9=L(ema9),e21=L(ema21),e50=L(ema50),r=L(rsi);
   const ts=adxVal!==null?(adxVal>25?'strong':adxVal>20?'moderate':'weak'):'unknown';
   let cond='neutral';
@@ -123,212 +117,216 @@ async function analyze(candles,sym='BTC-USDT'){
 // Sell thresholds now match buy thresholds for balance
 // ═══════════════════════════════════════════════════════════════════════════
 const AGENTS={
-  // Agent 1: Trend Master — EMA alignment + ADX
+  // Every agent reads the CONTEXT first, then interprets its indicator accordingly.
+  // bull = condition includes 'bullish', bear = includes 'bearish'
+
   trend_master(a){
-    if(!a.ema9||!a.ema21||a.adx===null)return{vote:'hold',confidence:0,reason:'no data'};
-    const strong=a.adx>25;
-    // BUY conditions
-    if(a.ema9>a.ema21&&a.ema21>a.ema50&&strong)return{vote:'buy',confidence:90,reason:'strong uptrend, EMAs aligned'};
-    if(a.ema9>a.ema21&&a.ema21>a.ema50)return{vote:'buy',confidence:65,reason:'uptrend'};
-    if(a.ema9>a.ema21)return{vote:'buy',confidence:45,reason:'mild uptrend'};
-    // SELL conditions (mirrored)
-    if(a.ema9<a.ema21&&a.ema21<a.ema50&&strong)return{vote:'sell',confidence:90,reason:'strong downtrend, EMAs aligned'};
-    if(a.ema9<a.ema21&&a.ema21<a.ema50)return{vote:'sell',confidence:65,reason:'downtrend'};
-    if(a.ema9<a.ema21)return{vote:'sell',confidence:45,reason:'mild downtrend'};
-    return{vote:'hold',confidence:0,reason:'no clear trend'};
+    if(!a.ema9||!a.ema21)return{vote:'hold',confidence:0,reason:'Missing EMA data'};
+    const bull=a.ema9>a.ema21, aligned=a.ema50&&((bull&&a.ema21>a.ema50)||(!bull&&a.ema21<a.ema50));
+    const strong=a.adx&&a.adx>25, adx=a.adx?a.adx.toFixed(0):'?';
+    // Context: EMAs tell the story of trend direction AND strength
+    if(bull&&aligned&&strong)return{vote:'buy',confidence:90,reason:'Perfect uptrend setup: all EMAs stacked bullish (9>21>50) with strong trend momentum (ADX:'+adx+'). This is a textbook "don\'t fight the trend" situation — stay long.'};
+    if(bull&&aligned)return{vote:'buy',confidence:70,reason:'Uptrend intact: EMAs aligned bullish but trend strength is moderate (ADX:'+adx+'). Good for buying dips but don\'t chase.'};
+    if(!bull&&aligned&&strong)return{vote:'sell',confidence:90,reason:'Strong downtrend: all EMAs stacked bearish (9<21<50) with powerful selling pressure (ADX:'+adx+'). Shorting into strength is the play here.'};
+    if(!bull&&aligned)return{vote:'sell',confidence:70,reason:'Downtrend in progress: EMAs aligned bearish (ADX:'+adx+'). Rallies are sell opportunities until EMAs flip.'};
+    if(bull)return{vote:'buy',confidence:50,reason:'Short-term bullish bias: EMA9 above EMA21 but longer-term EMAs not yet aligned (ADX:'+adx+'). Could be an early trend change or just a bounce — cautiously bullish.'};
+    return{vote:'sell',confidence:50,reason:'Short-term bearish bias: EMA9 below EMA21 (ADX:'+adx+'). Could be early downtrend or a dip — watching for confirmation.'};
   },
 
-  // Agent 2: Momentum Hunter — RSI + StochRSI
   momentum_hunter(a){
-    if(a.rsi===null||a.stochK===null)return{vote:'hold',confidence:0,reason:'no data'};
-    // BUY: oversold
-    if(a.rsi<30&&a.stochK<20)return{vote:'buy',confidence:85,reason:'deeply oversold RSI:'+a.rsi.toFixed(0)};
-    if(a.rsi<40&&a.stochK<30&&a.stochK>a.stochD)return{vote:'buy',confidence:65,reason:'oversold, StochRSI turning up'};
-    if(a.rsi<45&&a.prevRsi&&a.rsi>a.prevRsi)return{vote:'buy',confidence:45,reason:'RSI rising from low'};
-    // SELL: overbought (mirrored thresholds)
-    if(a.rsi>70&&a.stochK>80)return{vote:'sell',confidence:85,reason:'deeply overbought RSI:'+a.rsi.toFixed(0)};
-    if(a.rsi>60&&a.stochK>70&&a.stochK<a.stochD)return{vote:'sell',confidence:65,reason:'overbought, StochRSI turning down'};
-    if(a.rsi>55&&a.prevRsi&&a.rsi<a.prevRsi)return{vote:'sell',confidence:45,reason:'RSI falling from high'};
-    return{vote:'hold',confidence:0,reason:'neutral momentum'};
+    if(a.rsi===null)return{vote:'hold',confidence:0,reason:'No RSI data'};
+    const trend=a.condition||'neutral';const r=a.rsi;const rising=a.prevRsi&&r>a.prevRsi;
+    // CONTEXT: RSI means different things in different trends
+    if(trend.includes('bullish')){
+      // In uptrend: RSI 40-50 is a DIP to buy, 60-70 is normal, >75 is extended
+      if(r<35)return{vote:'buy',confidence:90,reason:'RSI at '+r.toFixed(0)+' in an uptrend — this is a deep oversold dip. In strong uptrends, these are the best buy opportunities. Smart money buys fear.'};
+      if(r<45)return{vote:'buy',confidence:80,reason:'RSI at '+r.toFixed(0)+' pulling back in an uptrend — classic "buy the dip" setup. Healthy correction before the next leg up.'};
+      if(r<60)return{vote:'buy',confidence:60,reason:'RSI at '+r.toFixed(0)+' — normal healthy range for an uptrend. Momentum is with the buyers.'};
+      if(r<75)return{vote:'buy',confidence:45,reason:'RSI at '+r.toFixed(0)+' — getting extended but uptrends can stay overbought for a long time. Still bullish but tighten stops.'};
+      return{vote:'sell',confidence:70,reason:'RSI at '+r.toFixed(0)+' in uptrend — extremely overbought even for a bull market. Short-term pullback very likely. Taking profits here is wise.'};
+    }
+    if(trend.includes('bearish')){
+      // In downtrend: RSI 50-60 is a dead cat bounce = sell, <30 might bounce but trend is down
+      if(r>65)return{vote:'sell',confidence:90,reason:'RSI at '+r.toFixed(0)+' in a downtrend — this is a bear market rally / dead cat bounce. Overbought in a downtrend = prime short entry.'};
+      if(r>55)return{vote:'sell',confidence:80,reason:'RSI at '+r.toFixed(0)+' bouncing in a downtrend — the bounce is losing steam. Sellers will likely push it back down.'};
+      if(r>45)return{vote:'sell',confidence:60,reason:'RSI at '+r.toFixed(0)+' — weak momentum in a downtrend. Bears are in control.'};
+      if(r>30)return{vote:'sell',confidence:45,reason:'RSI at '+r.toFixed(0)+' — oversold but downtrends can stay oversold for weeks. Don\'t try to catch falling knives.'};
+      return{vote:'buy',confidence:55,reason:'RSI at '+r.toFixed(0)+' — extremely oversold even for a downtrend. Dead cat bounce likely but be quick — the trend is still down.'};
+    }
+    // Sideways/neutral: RSI extremes matter more
+    if(r<30)return{vote:'buy',confidence:80,reason:'RSI at '+r.toFixed(0)+' in ranging market — oversold, mean reversion bounce expected.'};
+    if(r<45)return{vote:'buy',confidence:50,reason:'RSI at '+r.toFixed(0)+' — below midline, slight buy lean.'};
+    if(r>70)return{vote:'sell',confidence:80,reason:'RSI at '+r.toFixed(0)+' in ranging market — overbought, pullback expected.'};
+    if(r>55)return{vote:'sell',confidence:50,reason:'RSI at '+r.toFixed(0)+' — above midline, slight sell lean.'};
+    return{vote:rising?'buy':'sell',confidence:40,reason:'RSI neutral at '+r.toFixed(0)+', leaning with micro-momentum: '+(rising?'rising':'falling')+'.'};
   },
 
-  // Agent 3: MACD Specialist — MACD crossovers + histogram
   macd_specialist(a){
-    if(a.macdHist===null||a.prevMacdHist===null)return{vote:'hold',confidence:0,reason:'no data'};
-    const crossUp=a.macdHist>0&&a.prevMacdHist<=0;
-    const crossDn=a.macdHist<0&&a.prevMacdHist>=0;
-    const growing=Math.abs(a.macdHist)>Math.abs(a.prevMacdHist);
-    // BUY
-    if(crossUp)return{vote:'buy',confidence:growing?85:70,reason:'MACD bullish cross'+(growing?' +growing':'')};
-    if(a.macdHist>0&&growing)return{vote:'buy',confidence:50,reason:'MACD positive growing'};
-    // SELL (mirrored)
-    if(crossDn)return{vote:'sell',confidence:growing?85:70,reason:'MACD bearish cross'+(growing?' +growing':'')};
-    if(a.macdHist<0&&growing)return{vote:'sell',confidence:50,reason:'MACD negative growing'};
-    // Divergence hints
-    if(a.macdHist<0&&!growing&&a.prevMacdHist<a.macdHist)return{vote:'buy',confidence:40,reason:'MACD neg but recovering'};
-    if(a.macdHist>0&&!growing&&a.prevMacdHist>a.macdHist)return{vote:'sell',confidence:40,reason:'MACD pos but weakening'};
-    return{vote:'hold',confidence:0,reason:'MACD neutral'};
+    if(a.macdHist===null)return{vote:'hold',confidence:0,reason:'No MACD data'};
+    const trend=a.condition||'neutral';const h=a.macdHist;
+    const growing=a.prevMacdHist!==null&&Math.abs(h)>Math.abs(a.prevMacdHist);
+    const crossUp=a.prevMacdHist!==null&&h>0&&a.prevMacdHist<=0;
+    const crossDn=a.prevMacdHist!==null&&h<0&&a.prevMacdHist>=0;
+    // Fresh crosses are always significant
+    if(crossUp)return{vote:'buy',confidence:85,reason:'MACD just crossed bullish — fresh momentum shift. This is one of the strongest buy signals in technical analysis, especially when it aligns with the trend.'};
+    if(crossDn)return{vote:'sell',confidence:85,reason:'MACD just crossed bearish — momentum has shifted to sellers. This often marks the start of a significant move down.'};
+    // CONTEXT: MACD in trend
+    if(trend.includes('bullish')){
+      if(h>0&&growing)return{vote:'buy',confidence:75,reason:'MACD positive AND accelerating in an uptrend — bullish momentum is building. The trend is getting stronger, not weaker.'};
+      if(h>0)return{vote:'buy',confidence:55,reason:'MACD positive but slowing in uptrend — momentum fading slightly but still bullish. Normal during consolidation before next push.'};
+      if(h<0&&!growing)return{vote:'buy',confidence:65,reason:'MACD negative but recovering in uptrend — the pullback is losing steam. This is often the BEST buy signal: dip in an uptrend with MACD turning.'};
+      return{vote:'sell',confidence:50,reason:'MACD negative and falling in uptrend — concerning. The pullback might go deeper. Wait for MACD to turn before buying.'};
+    }
+    if(trend.includes('bearish')){
+      if(h<0&&growing)return{vote:'sell',confidence:75,reason:'MACD negative AND accelerating in downtrend — selling pressure intensifying. Don\'t try to catch this knife.'};
+      if(h<0)return{vote:'sell',confidence:55,reason:'MACD negative in downtrend — bears in control. Bounces are for selling.'};
+      if(h>0&&!growing)return{vote:'sell',confidence:65,reason:'MACD positive but fading in downtrend — the bounce is dying. This is a prime short entry: rally in a downtrend with MACD rolling over.'};
+      return{vote:'buy',confidence:50,reason:'MACD positive and growing in downtrend — possible trend reversal starting, but need more confirmation.'};
+    }
+    if(h>0)return{vote:'buy',confidence:growing?65:50,reason:'MACD positive ('+h.toFixed(4)+') — '+(growing?'momentum building':'holding steady')+'. Bullish lean.'};
+    return{vote:'sell',confidence:growing?65:50,reason:'MACD negative ('+h.toFixed(4)+') — '+(growing?'selling pressure building':'holding steady')+'. Bearish lean.'};
   },
 
-  // Agent 4: Fibonacci Analyst
   fibonacci_analyst(a){
-    if(!a.fib||!a.price||!a.atr)return{vote:'hold',confidence:0,reason:'no data'};
+    if(!a.fib||!a.price)return{vote:'hold',confidence:0,reason:'No fib data'};
+    const trend=a.condition||'neutral';
     const distSup=Math.abs(a.price-a.support)/a.price*100;
     const distRes=Math.abs(a.resistance-a.price)/a.price*100;
-    // BUY near support
-    if(a.inGoldenPocket&&a.rsi<55)return{vote:'buy',confidence:80,reason:'golden pocket zone'};
-    if(distSup<0.5)return{vote:'buy',confidence:70,reason:'at fib support'};
-    if(distSup<1.5&&a.rsi<50)return{vote:'buy',confidence:50,reason:'near fib support'};
-    // SELL near resistance (mirrored)
-    if(distRes<0.5)return{vote:'sell',confidence:70,reason:'at fib resistance'};
-    if(distRes<1.5&&a.rsi>50)return{vote:'sell',confidence:50,reason:'near fib resistance'};
-    if(a.price>a.fib.high*0.98)return{vote:'sell',confidence:60,reason:'near recent high'};
-    return{vote:'hold',confidence:0,reason:'between levels'};
+    // Golden pocket is always significant
+    if(a.inGoldenPocket)return{vote:'buy',confidence:85,reason:'Price is in the golden pocket zone (0.618 fib retracement) — this is the single most reliable buy zone in Fibonacci analysis. Institutional traders place limit orders here. High probability bounce zone.'};
+    // CONTEXT: fib levels in trend
+    if(trend.includes('bullish')){
+      if(distSup<1)return{vote:'buy',confidence:80,reason:'Price at fib support $'+a.support.toFixed(2)+' in an uptrend — textbook "buy the dip at support" setup. Support levels hold more often in uptrends.'};
+      if(distRes<0.5)return{vote:'buy',confidence:45,reason:'Price near fib resistance $'+a.resistance.toFixed(2)+' in uptrend — resistance often breaks in strong uptrends. Lean buy but watch for rejection.'};
+      return{vote:'buy',confidence:55,reason:'In uptrend, closer to support ($'+a.support.toFixed(2)+') than resistance. Fib structure supports continuation higher.'};
+    }
+    if(trend.includes('bearish')){
+      if(distRes<1)return{vote:'sell',confidence:80,reason:'Price at fib resistance $'+a.resistance.toFixed(2)+' in downtrend — textbook "sell the rip" setup. Resistance holds more often in downtrends.'};
+      if(distSup<0.5)return{vote:'sell',confidence:45,reason:'Price at fib support $'+a.support.toFixed(2)+' in downtrend — support breaks more often in downtrends. Lean sell but watch for bounce.'};
+      return{vote:'sell',confidence:55,reason:'In downtrend, closer to resistance ($'+a.resistance.toFixed(2)+'). Fib structure supports continuation lower.'};
+    }
+    if(distSup<distRes)return{vote:'buy',confidence:55,reason:'Closer to fib support ($'+a.support.toFixed(2)+') — mean reversion says buy near support.'};
+    return{vote:'sell',confidence:55,reason:'Closer to fib resistance ($'+a.resistance.toFixed(2)+') — mean reversion says sell near resistance.'};
   },
 
-  // Agent 5: Volume Expert — OBV + VWAP
   volume_expert(a){
-    if(!a.vwap||!a.price)return{vote:'hold',confidence:0,reason:'no data'};
-    let score=0,reasons=[];
-    if(a.obvTrend==='bullish'){score+=25;reasons.push('OBV+')}
-    if(a.obvTrend==='bearish'){score-=25;reasons.push('OBV-')}
-    if(a.volTrend==='high'){const dir=score>=0?1:-1;score+=15*dir;reasons.push('high vol')}
-    if(a.price>a.vwap*1.005){score+=15;reasons.push('>VWAP')}
-    if(a.price<a.vwap*0.995){score-=15;reasons.push('<VWAP')}
-    if(score>=30)return{vote:'buy',confidence:55+Math.min(score-30,30),reason:reasons.join(', ')};
-    if(score<=-30)return{vote:'sell',confidence:55+Math.min(Math.abs(score)-30,30),reason:reasons.join(', ')};
-    if(score>=15)return{vote:'buy',confidence:40,reason:reasons.join(', ')};
-    if(score<=-15)return{vote:'sell',confidence:40,reason:reasons.join(', ')};
-    return{vote:'hold',confidence:0,reason:'volume neutral'};
+    if(!a.price)return{vote:'hold',confidence:0,reason:'No data'};
+    const trend=a.condition||'neutral';let score=0,reasons=[];
+    // CONTEXT: volume confirms or denies the trend
+    if(trend.includes('bullish')){
+      if(a.obvTrend==='bullish'){score+=35;reasons.push('Money flowing IN during uptrend — volume confirms the move up. Smart money is buying.')}
+      else{score-=10;reasons.push('Warning: uptrend but money flowing OUT — the rally may be losing institutional support.')}
+    }else if(trend.includes('bearish')){
+      if(a.obvTrend==='bearish'){score-=35;reasons.push('Money flowing OUT during downtrend — volume confirms the selling. Institutions are dumping.')}
+      else{score+=10;reasons.push('Interesting: downtrend but money flowing IN — possible accumulation by smart money before reversal.')}
+    }else{
+      if(a.obvTrend==='bullish'){score+=25;reasons.push('OBV bullish')}else{score-=25;reasons.push('OBV bearish')}
+    }
+    if(a.vwap){if(a.price>a.vwap){score+=15;reasons.push('Above VWAP $'+a.vwap.toFixed(2)+' — intraday buyers winning.')}else{score-=15;reasons.push('Below VWAP $'+a.vwap.toFixed(2)+' — intraday sellers winning.')}}
+    if(a.volTrend==='high')reasons.push('Volume is elevated — move is significant.');
+    if(score>0)return{vote:'buy',confidence:Math.min(40+score,85),reason:reasons.join(' ')};
+    return{vote:'sell',confidence:Math.min(40+Math.abs(score),85),reason:reasons.join(' ')};
   },
 
-  // Agent 6: Bollinger Trader
   bollinger_trader(a){
-    if(!a.bbUpper||!a.bbLower||!a.price)return{vote:'hold',confidence:0,reason:'no data'};
-    const pos=(a.price-a.bbLower)/(a.bbUpper-a.bbLower);
-    // BUY at lower band
-    if(pos<0.1)return{vote:'buy',confidence:80,reason:'at lower BB ('+Math.round(pos*100)+'%)'};
-    if(pos<0.25)return{vote:'buy',confidence:55,reason:'near lower BB'};
-    // SELL at upper band (mirrored)
-    if(pos>0.9)return{vote:'sell',confidence:80,reason:'at upper BB ('+Math.round(pos*100)+'%)'};
-    if(pos>0.75)return{vote:'sell',confidence:55,reason:'near upper BB'};
-    return{vote:'hold',confidence:0,reason:'mid BB ('+Math.round(pos*100)+'%)'};
+    if(!a.bbUpper||!a.bbLower||!a.price)return{vote:'hold',confidence:0,reason:'No BB data'};
+    const trend=a.condition||'neutral';const pos=(a.price-a.bbLower)/(a.bbUpper-a.bbLower);const pct=Math.round(pos*100);
+    // CONTEXT: BB position means different things in trends vs ranges
+    if(trend.includes('bullish')){
+      if(pos<0.2)return{vote:'buy',confidence:85,reason:'Price at bottom of BB ('+pct+'%) during uptrend — this is a gift. In uptrends, lower BB touches are prime buy-the-dip entries. The band acts as dynamic support.'};
+      if(pos<0.4)return{vote:'buy',confidence:65,reason:'Price in lower BB zone ('+pct+'%) during uptrend — healthy pullback. Expect bounce back toward upper band.'};
+      if(pos>0.9)return{vote:'buy',confidence:40,reason:'Price at upper BB ('+pct+'%) in uptrend — extended but "walking the upper band" is normal in strong trends. Cautious buy, tighten stops.'};
+      return{vote:'buy',confidence:55,reason:'BB position '+pct+'% in uptrend — normal range. Trend supports buying.'};
+    }
+    if(trend.includes('bearish')){
+      if(pos>0.8)return{vote:'sell',confidence:85,reason:'Price at top of BB ('+pct+'%) during downtrend — classic sell-the-rip setup. Upper BB acts as dynamic resistance in downtrends.'};
+      if(pos>0.6)return{vote:'sell',confidence:65,reason:'Price in upper BB zone ('+pct+'%) during downtrend — dead cat bounce hitting resistance.'};
+      if(pos<0.1)return{vote:'sell',confidence:40,reason:'Price at lower BB ('+pct+'%) in downtrend — "walking the lower band" happens in crashes. Don\'t catch knives.'};
+      return{vote:'sell',confidence:55,reason:'BB position '+pct+'% in downtrend — trend supports selling.'};
+    }
+    // Sideways: BB works best for mean reversion
+    if(pos<0.15)return{vote:'buy',confidence:80,reason:'BB position '+pct+'% in range — oversold, strong mean reversion buy.'};
+    if(pos<0.4)return{vote:'buy',confidence:55,reason:'BB below midline ('+pct+'%) — lean buy.'};
+    if(pos>0.85)return{vote:'sell',confidence:80,reason:'BB position '+pct+'% in range — overbought, strong mean reversion sell.'};
+    if(pos>0.6)return{vote:'sell',confidence:55,reason:'BB above midline ('+pct+'%) — lean sell.'};
+    return{vote:pos<0.5?'buy':'sell',confidence:40,reason:'BB mid-range ('+pct+'%) — slight lean.'};
   },
 
-  // Agent 7: Sentiment & News (including world/macro)
   sentiment_analyst(a){
-    if(!a.sentiment||!a.news)return{vote:'hold',confidence:0,reason:'No sentiment data available'};
-    let score=0,reasons=[];
-    const fg=a.sentiment.value;
-    if(fg<20){score+=35;reasons.push('Extreme fear index ('+fg+') — historically a contrarian buy signal, smart money buys when others panic')}
-    else if(fg<35){score+=20;reasons.push('Fear zone (F&G:'+fg+') — market is scared, potential buying opportunity')}
-    else if(fg>80){score-=35;reasons.push('Extreme greed ('+fg+') — market is euphoric, historically precedes corrections')}
-    else if(fg>65){score-=20;reasons.push('Greed zone (F&G:'+fg+') — caution, market may be overheated')}
-    else{reasons.push('Fear & Greed neutral at '+fg)}
-    const cn=a.news.coin;
-    if(cn&&cn.bias==='bullish'){score+=20;reasons.push('Coin-specific news is bullish ('+cn.n+' articles, score:'+cn.score+')')}
-    if(cn&&cn.bias==='bearish'){score-=20;reasons.push('Coin-specific news is bearish ('+cn.n+' articles, score:'+cn.score+')')}
-    const ov=a.news.overall;
-    if(ov&&ov.bias==='bullish'){score+=10;reasons.push('Overall market news positive')}
-    if(ov&&ov.bias==='bearish'){score-=10;reasons.push('Overall market news negative')}
-    if(ov&&ov.macroBias==='bullish'){score+=15;reasons.push('World/macro news bullish — favorable for risk assets')}
-    if(ov&&ov.macroBias==='bearish'){score-=15;reasons.push('World/macro news bearish — risk-off environment')}
-    if(score>=25)return{vote:'buy',confidence:50+Math.min(score-25,35),reason:reasons.join('. ')};
-    if(score<=-25)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-25,35),reason:reasons.join('. ')};
-    return{vote:'hold',confidence:0,reason:reasons.join('. ')};
+    if(!a.sentiment)return{vote:'hold',confidence:0,reason:'No sentiment data'};
+    const trend=a.condition||'neutral';let score=0,reasons=[];const fg=a.sentiment.value;
+    // CONTEXT: sentiment is contrarian — fear in uptrend = buy more, greed in downtrend = short more
+    if(trend.includes('bullish')){
+      if(fg<30){score+=35;reasons.push('Extreme fear ('+fg+') in an uptrend — the crowd is scared but the trend is up. This is when Warren Buffett says "be greedy when others are fearful." Strongest buy signal.')}
+      else if(fg<45){score+=20;reasons.push('Fear ('+fg+') despite uptrend — market hasn\'t caught up to the trend yet. Early buyers profit most.')}
+      else if(fg>75){score-=15;reasons.push('Extreme greed ('+fg+') in uptrend — everyone is bullish which means the easy money is made. Tighten stops but don\'t fight the trend.')}
+      else{score+=10;reasons.push('F&G '+fg+' — neutral sentiment in uptrend, room to run.')}
+    }else if(trend.includes('bearish')){
+      if(fg>70){score-=35;reasons.push('Extreme greed ('+fg+') in a downtrend — the crowd is delusional. They\'re buying the dip but the trend is down. Prime short setup.')}
+      else if(fg>55){score-=20;reasons.push('Greed ('+fg+') despite downtrend — complacency before more pain.')}
+      else if(fg<25){score+=15;reasons.push('Extreme fear ('+fg+') in downtrend — maximum pessimism might mean capitulation. Potential bottom but risky.')}
+      else{score-=10;reasons.push('F&G '+fg+' in downtrend — sentiment confirms bearishness.')}
+    }else{
+      if(fg<30){score+=25;reasons.push('Extreme fear ('+fg+') — contrarian buy')}
+      else if(fg>70){score-=25;reasons.push('Extreme greed ('+fg+') — contrarian sell')}
+      else{score+=fg<50?5:-5;reasons.push('F&G neutral at '+fg)}
+    }
+    if(a.news){const cn=a.news.coin;if(cn&&cn.bias==='bullish'){score+=12;reasons.push('Coin news bullish')}if(cn&&cn.bias==='bearish'){score-=12;reasons.push('Coin news bearish')}
+    const ov=a.news.overall;if(ov&&ov.macroBias==='bullish'){score+=8;reasons.push('World macro positive')}if(ov&&ov.macroBias==='bearish'){score-=8;reasons.push('World macro negative')}}
+    if(score>0)return{vote:'buy',confidence:Math.min(40+score,85),reason:reasons.join(' ')};
+    return{vote:'sell',confidence:Math.min(40+Math.abs(score),85),reason:reasons.join(' ')};
   },
 
-  // Agent 8: Quant AI — Statistical analysis, z-score, rate of change, mean reversion
   quant_ai(a){
-    if(!a.price||!a.ema21||!a.atr||!a.bbUpper||!a.bbLower||a.rsi===null)return{vote:'hold',confidence:0,reason:'no data'};
-
-    let score=0,reasons=[];
-
-    // Z-score: how many std devs from BB mean
-    const bbMid=a.bbSma||(a.bbUpper+a.bbLower)/2;
-    const bbStd=(a.bbUpper-a.bbLower)/4; // approx 2 std = BB width
-    const zScore=bbStd>0?(a.price-bbMid)/bbStd:0;
-
-    if(zScore<-1.5){score+=30;reasons.push('z-score:'+zScore.toFixed(1)+' (undervalued)')}
-    else if(zScore<-0.8){score+=15;reasons.push('z:'+zScore.toFixed(1))}
-    else if(zScore>1.5){score-=30;reasons.push('z-score:'+zScore.toFixed(1)+' (overvalued)')}
-    else if(zScore>0.8){score-=15;reasons.push('z:'+zScore.toFixed(1))}
-
-    // Rate of change (price vs EMA21)
-    const roc=((a.price-a.ema21)/a.ema21)*100;
-    if(roc<-3){score+=20;reasons.push('ROC:-'+Math.abs(roc).toFixed(1)+'% (oversold vs EMA)')}
-    else if(roc<-1.5){score+=10;reasons.push('ROC:'+roc.toFixed(1)+'%')}
-    else if(roc>3){score-=20;reasons.push('ROC:+'+roc.toFixed(1)+'% (overbought vs EMA)')}
-    else if(roc>1.5){score-=10;reasons.push('ROC:+'+roc.toFixed(1)+'%')}
-
-    // RSI divergence detection
-    if(a.rsi>70&&roc<0){score-=15;reasons.push('bearish RSI divergence')}
-    if(a.rsi<30&&roc>0){score+=15;reasons.push('bullish RSI divergence')}
-
-    // Volatility regime (high ATR = mean reversion more likely)
-    const atrPct=(a.atr/a.price)*100;
-    if(atrPct>2&&zScore>1){score-=10;reasons.push('high vol + extended = revert down')}
-    if(atrPct>2&&zScore<-1){score+=10;reasons.push('high vol + depressed = revert up')}
-
-    // Price vs VWAP momentum
-    if(a.vwap){
-      const vwapDist=((a.price-a.vwap)/a.vwap)*100;
-      if(vwapDist<-1){score+=10;reasons.push('below VWAP')}
-      if(vwapDist>1){score-=10;reasons.push('above VWAP')}
+    if(!a.price||!a.ema21||!a.bbUpper||!a.bbLower)return{vote:'hold',confidence:0,reason:'No data'};
+    const trend=a.condition||'neutral';let score=0,reasons=[];
+    const bbMid=a.bbSma||(a.bbUpper+a.bbLower)/2;const bbStd=(a.bbUpper-a.bbLower)/4;
+    const zScore=bbStd>0?(a.price-bbMid)/bbStd:0;const roc=((a.price-a.ema21)/a.ema21)*100;
+    reasons.push('Z-score:'+zScore.toFixed(2)+' ROC:'+roc.toFixed(2)+'%');
+    // CONTEXT: z-score means different things in trending vs ranging
+    if(trend.includes('bullish')){
+      if(zScore<-1){score+=30;reasons.push('Statistically undervalued in uptrend — mean reversion + trend = high probability buy.')}
+      else if(zScore>1.5){score-=10;reasons.push('Extended even for an uptrend — minor pullback likely but trend intact.')}
+      else{score+=10;reasons.push('Normal range for uptrend.')}
+    }else if(trend.includes('bearish')){
+      if(zScore>1){score-=30;reasons.push('Statistically overvalued in downtrend — mean reversion + trend = high probability short.')}
+      else if(zScore<-1.5){score+=10;reasons.push('Deeply depressed even for downtrend — dead cat bounce possible.')}
+      else{score-=10;reasons.push('Normal range for downtrend.')}
+    }else{
+      if(zScore<-0.5)score+=15;else if(zScore>0.5)score-=15;
+      if(roc<-1)score+=12;else if(roc>1)score-=12;
     }
-
-    if(score>=25)return{vote:'buy',confidence:50+Math.min(score-25,40),reason:reasons.join(', ')};
-    if(score<=-25)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-25,40),reason:reasons.join(', ')};
-    if(score>=10)return{vote:'buy',confidence:35,reason:reasons.join(', ')};
-    if(score<=-10)return{vote:'sell',confidence:35,reason:reasons.join(', ')};
-    return{vote:'hold',confidence:0,reason:'quant neutral (z:'+zScore.toFixed(1)+' roc:'+roc.toFixed(1)+'%)'};
+    if(a.rsi&&a.rsi>70&&roc<0){score-=10;reasons.push('Bearish divergence detected.')}
+    if(a.rsi&&a.rsi<30&&roc>0){score+=10;reasons.push('Bullish divergence detected.')}
+    if(score>0)return{vote:'buy',confidence:Math.min(40+score,85),reason:reasons.join(' ')};
+    return{vote:'sell',confidence:Math.min(40+Math.abs(score),85),reason:reasons.join(' ')};
   },
 
-  // Agent 9: ATR Volatility Specialist — volatility breakouts, squeeze, expansion
   atr_volatility(a){
-    if(!a.atr||!a.price||!a.bbUpper||!a.bbLower)return{vote:'hold',confidence:0,reason:'no ATR data'};
-    const atrPct=(a.atr/a.price)*100;
-    const bbWidth=((a.bbUpper-a.bbLower)/a.bbSma)*100;
-    let score=0,reasons=[];
-
-    // ATR expansion/contraction
-    reasons.push('ATR: $'+a.atr.toFixed(2)+' ('+atrPct.toFixed(2)+'% of price)');
-
-    // Volatility squeeze (low ATR + tight BB = breakout coming)
-    if(atrPct<1&&bbWidth<3){
-      // Squeeze detected — direction from trend
-      if(a.ema9>a.ema21){score+=25;reasons.push('SQUEEZE detected — EMAs bullish, expect upside breakout')}
-      else if(a.ema9<a.ema21){score-=25;reasons.push('SQUEEZE detected — EMAs bearish, expect downside breakout')}
-      else{reasons.push('SQUEEZE detected — waiting for direction')}
+    if(!a.atr||!a.price)return{vote:'hold',confidence:0,reason:'No ATR data'};
+    const trend=a.condition||'neutral';const atrPct=(a.atr/a.price)*100;
+    let score=0,reasons=['ATR: '+atrPct.toFixed(2)+'% of price.'];
+    const bbWidth=a.bbUpper&&a.bbLower?((a.bbUpper-a.bbLower)/(a.bbSma||a.price))*100:5;
+    // CONTEXT: volatility tells us HOW to trade, not just WHAT direction
+    if(atrPct<1.5&&bbWidth<4){
+      reasons.push('VOLATILITY SQUEEZE detected — bands are tight, big move incoming.');
+      if(trend.includes('bullish')){score+=30;reasons.push('Squeeze in uptrend = expect explosive breakout UPWARD. Coiled spring ready to launch.')}
+      else if(trend.includes('bearish')){score-=30;reasons.push('Squeeze in downtrend = expect breakdown. The calm before the storm — to the downside.')}
+      else if(a.ema9>a.ema21){score+=20;reasons.push('Squeeze with bullish lean.')}
+      else{score-=20;reasons.push('Squeeze with bearish lean.')}
+    }else if(atrPct>3){
+      const bbPos=a.bbUpper?(a.price-a.bbLower)/(a.bbUpper-a.bbLower):0.5;
+      reasons.push('HIGH VOLATILITY — market is wild.');
+      if(bbPos>0.8){score-=25;reasons.push('Extended to upside in high vol — profit-taking and mean reversion pullback likely.')}
+      else if(bbPos<0.2){score+=25;reasons.push('Depressed in high vol — panic selling overdone, snap-back rally likely.')}
+    }else{
+      reasons.push('Normal volatility — good environment for trading.');
+      if(trend.includes('bullish')){score+=12;reasons.push('Normal vol + uptrend = clean trending environment. Follow the trend.')}
+      else if(trend.includes('bearish')){score-=12;reasons.push('Normal vol + downtrend = clean sell setup.')}
+      else if(a.ema9>a.ema21){score+=8}else{score-=8}
     }
-
-    // High volatility + overextension = mean reversion
-    if(atrPct>3){
-      const bbPos=(a.price-a.bbLower)/(a.bbUpper-a.bbLower);
-      if(bbPos>0.85){score-=30;reasons.push('HIGH volatility + price at top of range — likely pullback')}
-      else if(bbPos<0.15){score+=30;reasons.push('HIGH volatility + price at bottom — likely bounce')}
-      else{reasons.push('HIGH volatility — choppy, be careful')}
-    }
-
-    // ATR relative to price movement
-    if(a.ema9&&a.ema21){
-      const emaDist=Math.abs(a.ema9-a.ema21);
-      const atrRatio=emaDist/a.atr;
-      if(atrRatio>2&&a.ema9>a.ema21){score+=15;reasons.push('strong trend move ('+atrRatio.toFixed(1)+'x ATR separation)')}
-      if(atrRatio>2&&a.ema9<a.ema21){score-=15;reasons.push('strong down move ('+atrRatio.toFixed(1)+'x ATR separation)')}
-    }
-
-    // Normal volatility — use ATR for stop placement quality
-    if(atrPct>=1&&atrPct<=3){
-      reasons.push('normal volatility — good for trading');
-      // In normal vol, follow the trend
-      if(a.condition&&a.condition.includes('bullish')){score+=10;reasons.push('trend is up')}
-      if(a.condition&&a.condition.includes('bearish')){score-=10;reasons.push('trend is down')}
-    }
-
-    if(score>=20)return{vote:'buy',confidence:50+Math.min(score-20,35),reason:reasons.join('. ')};
-    if(score<=-20)return{vote:'sell',confidence:50+Math.min(Math.abs(score)-20,35),reason:reasons.join('. ')};
-    return{vote:'hold',confidence:0,reason:reasons.join('. ')};
+    if(score>0)return{vote:'buy',confidence:Math.min(40+score,85),reason:reasons.join(' ')};
+    return{vote:'sell',confidence:Math.min(40+Math.abs(score),85),reason:reasons.join(' ')};
   }
 };
 
@@ -459,23 +457,26 @@ function loadSettings(){
     if(s.trailingStop!==undefined)bot.trailingStop=s.trailingStop;if(s.trailATR)bot.trailATR=s.trailATR;
     if(s.maxOpenTrades)bot.maxOpenTrades=s.maxOpenTrades;if(s.leverage)bot.leverage=s.leverage;
     if(s.credentials)bot.credentials=s.credentials;
-    console.log('Settings loaded from disk')}}catch(e){console.log('No saved settings')}
+    console.log('✅ Settings loaded: mode='+bot.mode+' type='+bot.tradingType+' agents='+bot.requiredAgents+' creds='+(bot.credentials?'yes':'no'));
+  }else{console.log('No settings file found, using defaults')}}catch(e){console.log('Settings load err:',e.message)}
   try{if(fs.existsSync(STATE_FILE)){const s=JSON.parse(fs.readFileSync(STATE_FILE,'utf8'));
     if(s.paperUSD!==undefined)bot.paperUSD=s.paperUSD;if(s.startBal)bot.startBal=s.startBal;
     if(s.peakBal)bot.peakBal=s.peakBal;if(s.totalPnL!==undefined)bot.totalPnL=s.totalPnL;
     if(s.winCount!==undefined)bot.winCount=s.winCount;if(s.lossCount!==undefined)bot.lossCount=s.lossCount;
     if(s.history)bot.history=s.history;if(s.openTrades)bot.openTrades=s.openTrades;
-    console.log('State loaded from disk')}}catch(e){console.log('No saved state')}
+    console.log('✅ State loaded: balance=$'+bot.paperUSD+' trades='+bot.history.length+' open='+bot.openTrades.length);
+  }else{console.log('No state file found')}}catch(e){console.log('State load err:',e.message)}
 }
 function saveSettings(){
-  try{fs.writeFileSync(SETTINGS_FILE,JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,credentials:bot.credentials}))}catch(e){console.log('Save settings err:',e.message)}
+  try{const data=JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,credentials:bot.credentials});
+  fs.writeFileSync(SETTINGS_FILE,data);console.log('Settings saved: mode='+bot.mode)}catch(e){console.log('Save err:',e.message)}
 }
 function saveState(){
-  try{fs.writeFileSync(STATE_FILE,JSON.stringify({paperUSD:bot.paperUSD,startBal:bot.startBal,peakBal:bot.peakBal,totalPnL:bot.totalPnL,winCount:bot.winCount,lossCount:bot.lossCount,history:bot.history.slice(-200),openTrades:bot.openTrades}))}catch(e){console.log('Save state err:',e.message)}
+  try{fs.writeFileSync(STATE_FILE,JSON.stringify({paperUSD:bot.paperUSD,startBal:bot.startBal,peakBal:bot.peakBal,totalPnL:bot.totalPnL,winCount:bot.winCount,lossCount:bot.lossCount,history:bot.history.slice(-200),openTrades:bot.openTrades}))}catch(e){console.log('State save err:',e.message)}
 }
-loadSettings(); // load on startup
-// Auto-save state every 60s
-setInterval(saveState,60000);
+loadSettings();
+// Auto-save BOTH settings and state every 30s (was 60s)
+setInterval(()=>{saveSettings();saveState()},30000);
 
 function botLog(m){const e={time:new Date().toISOString(),msg:m};bot.log.push(e);if(bot.log.length>500)bot.log.shift();console.log('[BOT]',m)}
 
@@ -508,7 +509,7 @@ function closeTrade(t,price,reason){
   t.pnl=t.type==='futures'?raw*t.leverage:raw;t.pnlPct=((t.exitPrice-t.entryPrice)/t.entryPrice*100*dir*(t.type==='futures'?t.leverage:1));
   bot.paperUSD+=t.margin+t.pnl;bot.totalPnL+=t.pnl;t.pnl>0?bot.winCount++:bot.lossCount++;
   bot.openTrades=bot.openTrades.filter(x=>x.id!==t.id);bot.history.push(t);if(bot.history.length>500)bot.history.shift();
-  botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(2)} | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
+  botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(2)} | size:$${(t.usdAmount||0).toFixed(2)} | lev:${t.leverage||1}x | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
 }
 
 async function liveOrder(side,sym,qty){
@@ -592,13 +593,20 @@ async function tick(){
         // ═══ COUNCIL VOTE ═══
         const council=councilVote(a,bot.requiredAgents);
         bot.lastCouncil[sym]=council;
-        // Log why trades are blocked
-        if(council.blockReason){botLog(`${sym.replace('-USDT','')} ${council.blockReason}`)}
-        else if(council.sellCount>=2&&council.decision==='hold'){
-          botLog(`${sym.replace('-USDT','')} ${council.buyCount}buy(${council.buyScore}pts)/${council.sellCount}sell(${council.sellScore}pts) T1:${council.buyT1}b/${council.sellT1}s — hold`);
+        const coin=sym.replace('-USDT','');
+
+        // Always log the result so user can see bot is working
+        if(council.decision!=='hold'){
+          botLog(`${coin} → ${council.decision.toUpperCase()} | ${council.buyCount}buy(${council.buyScore||0}pts)/${council.sellCount}sell(${council.sellScore||0}pts) | conf:${council.confidence}% | HTF:${council.htf||'?'}`);
+        }else if(council.blockReason){
+          botLog(`${coin} ${council.blockReason}`);
+        }else if(Math.max(council.buyScore||0,council.sellScore||0)>=4){
+          // Log when there's a notable signal building
+          botLog(`${coin} ${council.buyCount}b(${council.buyScore||0}pts)/${council.sellCount}s(${council.sellScore||0}pts) T1:${council.buyT1||0}b/${council.sellT1||0}s — need ${council.weightThreshold||8}pts`);
         }
+
         if(council.decision==='hold')continue;
-        if(council.confidence<40)continue;
+        if(council.confidence<40){botLog(`${coin} ${council.decision} conf too low: ${council.confidence}%`);continue}
 
         // Auto-leverage calculation: tighter SL = higher leverage for same risk
         const slDistPct=(atr*bot.slATR)/price*100; // SL distance as % of price
