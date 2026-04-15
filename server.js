@@ -332,43 +332,62 @@ const AGENTS={
   }
 };
 
-// ═══ COUNCIL VOTE (fixed: buy and sell are independent) ═══
+// ═══ COUNCIL VOTE (multi-timeframe aware) ═══
 function councilVote(a,requiredAgree=4){
   const votes={};
   for(const[name,fn]of Object.entries(AGENTS))votes[name]=fn(a);
   const buys=Object.entries(votes).filter(([_,v])=>v.vote==='buy');
   const sells=Object.entries(votes).filter(([_,v])=>v.vote==='sell');
-  const buyConf=buys.length?Math.round(buys.reduce((s,[_,v])=>s+v.confidence,0)/buys.length):0;
-  const sellConf=sells.length?Math.round(sells.reduce((s,[_,v])=>s+v.confidence,0)/sells.length):0;
+  let buyConf=buys.length?Math.round(buys.reduce((s,[_,v])=>s+v.confidence,0)/buys.length):0;
+  let sellConf=sells.length?Math.round(sells.reduce((s,[_,v])=>s+v.confidence,0)/sells.length):0;
 
-  // In bearish conditions, lower sell threshold
+  // Higher timeframe bias adjustments
+  const htf=a.htf||{bias:'neutral'};
   let buyReq=requiredAgree,sellReq=requiredAgree;
-  if(a.condition&&a.condition.includes('bearish'))sellReq=Math.max(2,requiredAgree-1);
-  if(a.condition&&a.condition.includes('bullish'))buyReq=Math.max(2,requiredAgree-1);
+  let htfNote='';
+
+  if(htf.bias==='strong_bullish'){
+    buyReq=Math.max(2,requiredAgree-1);buyConf=Math.min(buyConf+15,100);
+    sellConf=Math.max(sellConf-20,0);sellReq=requiredAgree+1;
+    htfNote='4H+1H bullish → easier to buy, harder to sell';
+  }else if(htf.bias==='bullish'){
+    buyConf=Math.min(buyConf+10,100);
+    htfNote='4H bullish → buy confidence boosted';
+  }else if(htf.bias==='strong_bearish'){
+    sellReq=Math.max(2,requiredAgree-1);sellConf=Math.min(sellConf+15,100);
+    buyConf=Math.max(buyConf-20,0);buyReq=requiredAgree+1;
+    htfNote='4H+1H bearish → easier to sell, harder to buy';
+  }else if(htf.bias==='bearish'){
+    sellConf=Math.min(sellConf+10,100);
+    htfNote='4H bearish → sell confidence boosted';
+  }else if(htf.bias==='mildly_bullish'){
+    buyConf=Math.min(buyConf+5,100);
+    htfNote='1H mildly bullish';
+  }else if(htf.bias==='mildly_bearish'){
+    sellConf=Math.min(sellConf+5,100);
+    htfNote='1H mildly bearish';
+  }
+
+  // Also use 15m condition
+  if(a.condition&&a.condition.includes('bearish'))sellReq=Math.max(2,sellReq-1);
+  if(a.condition&&a.condition.includes('bullish'))buyReq=Math.max(2,buyReq-1);
 
   let decision='hold',conf=0,agreeing=0;
-
-  // BUY and SELL are evaluated INDEPENDENTLY
-  // If both meet threshold, higher confidence wins
   const buyMet=buys.length>=buyReq;
   const sellMet=sells.length>=sellReq;
 
   if(buyMet&&sellMet){
-    // Both met — go with higher confidence
     if(sellConf>=buyConf){decision='sell';conf=sellConf;agreeing=sells.length}
     else{decision='buy';conf=buyConf;agreeing=buys.length}
-  }else if(buyMet){
-    decision='buy';conf=buyConf;agreeing=buys.length;
-  }else if(sellMet){
-    decision='sell';conf=sellConf;agreeing=sells.length;
-  }
+  }else if(buyMet){decision='buy';conf=buyConf;agreeing=buys.length}
+  else if(sellMet){decision='sell';conf=sellConf;agreeing=sells.length}
 
-  // Bonus for strong agreement
-  if(agreeing>=7)conf=Math.min(conf+20,100);
-  else if(agreeing>=6)conf=Math.min(conf+15,100);
-  else if(agreeing>=5)conf=Math.min(conf+10,100);
+  if(agreeing>=8)conf=Math.min(conf+20,100);
+  else if(agreeing>=7)conf=Math.min(conf+15,100);
+  else if(agreeing>=6)conf=Math.min(conf+10,100);
+  else if(agreeing>=5)conf=Math.min(conf+5,100);
 
-  return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,buyCount:buys.length,sellCount:sells.length,buyReq,sellReq};
+  return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,buyCount:buys.length,sellCount:sells.length,buyReq,sellReq,htf:htf.bias,htfNote,h4:htf.h4||null,h1:htf.h1||null};
 }
 
 // ═══ BOT STATE ═══
@@ -453,14 +472,41 @@ async function liveOrder(side,sym,qty){
   const d=await safeJSON(r);if(d.code!=='200000')throw new Error(d.msg||'Order failed');return d.data;
 }
 
+// ═══ MULTI-TIMEFRAME ANALYSIS ═══
+async function multiTimeframeAnalysis(sym){
+  const [c15, c1h, c4h] = await Promise.all([
+    fetchKlines(sym,'15min',100),
+    fetchKlines(sym,'1hour',100),
+    fetchKlines(sym,'4hour',100)
+  ]);
+  const a15=await analyze(c15,sym);
+  const a1h=await analyze(c1h,sym);
+  const a4h=await analyze(c4h,sym);
+  // Determine higher timeframe bias
+  let htfBias='neutral';
+  if(a4h.condition.includes('bullish')&&a1h.condition.includes('bullish'))htfBias='strong_bullish';
+  else if(a4h.condition.includes('bullish'))htfBias='bullish';
+  else if(a4h.condition.includes('bearish')&&a1h.condition.includes('bearish'))htfBias='strong_bearish';
+  else if(a4h.condition.includes('bearish'))htfBias='bearish';
+  else if(a1h.condition.includes('bullish'))htfBias='mildly_bullish';
+  else if(a1h.condition.includes('bearish'))htfBias='mildly_bearish';
+  // Attach higher timeframe data to 15m analysis
+  a15.htf={
+    bias:htfBias,
+    h4:{condition:a4h.condition,rsi:a4h.rsi,ema9:a4h.ema9,ema21:a4h.ema21,ema50:a4h.ema50,macdHist:a4h.macdHist,atr:a4h.atr},
+    h1:{condition:a1h.condition,rsi:a1h.rsi,ema9:a1h.ema9,ema21:a1h.ema21,ema50:a1h.ema50,macdHist:a1h.macdHist,atr:a1h.atr}
+  };
+  return a15;
+}
+
 // ═══ BOT TICK ═══
 async function tick(){
   try{
-    await fetchNews(); // refresh news
+    await fetchNews();
     for(const sym of bot.symbols){
       try{
-        const candles=await fetchKlines(sym,'15min',100);
-        const a=await analyze(candles,sym);bot.lastAnalysis[sym]=a;
+        const a=await multiTimeframeAnalysis(sym);
+        bot.lastAnalysis[sym]=a;
         const{price,atr}=a;if(!price||!atr)continue;
 
         // Check open trades
@@ -587,7 +633,7 @@ app.post('/api/bot/settings',mw,(req,res)=>{
 });
 
 app.get('/api/bot/analysis/:sym',mw,async(req,res)=>{
-  try{const candles=await fetchKlines(req.params.sym,'15min',100);const a=await analyze(candles,req.params.sym);const council=councilVote(a,bot.requiredAgents);res.json({success:true,analysis:a,council})}catch(e){res.status(500).json({error:e.message})}
+  try{const a=await multiTimeframeAnalysis(req.params.sym);const council=councilVote(a,bot.requiredAgents);res.json({success:true,analysis:a,council})}catch(e){res.status(500).json({error:e.message})}
 });
 app.get('/api/bot/news',mw,async(req,res)=>{try{const n=await fetchNews();const s=await getSentiment();res.json({success:true,articles:n.articles,coinSentiment:n.sentiment,overall:n.overall,fearGreed:s})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/bot/backtest',mw,async(req,res)=>{try{const{symbol='BTC-USDT',requiredAgents=4,periods=500}=req.body||{};res.json({success:true,result:await backtest(symbol,requiredAgents,periods)})}catch(e){res.status(500).json({error:e.message})}});
