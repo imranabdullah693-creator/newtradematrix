@@ -94,7 +94,7 @@
       <div class="cd"><div class="ct">📜 Log</div><div class="log" id="logbox">Bot not started.</div></div>
     </div>
     <!-- COUNCIL -->
-    <div class="pg" id="pg-council"><div class="cd"><div class="ct">⚖ Agent Council — Real-time Votes</div><p style="font-size:10px;color:var(--t2);margin-bottom:12px">9 specialist agents each analyze 3 timeframes (4H, 1H, 15M) using different indicators. Trade executes only when enough agents agree.</p><div class="fr"><select class="fs" id="council-sym"></select><button class="btn bb" onclick="showCouncil()">Show Votes</button></div><div id="council-result"></div></div></div>
+    <div class="pg" id="pg-council"><div class="cd"><div class="ct">⚖ Agent Council — Real-time Votes</div><p style="font-size:10px;color:var(--t2);margin-bottom:12px">9 specialist agents each analyze 3 timeframes (4H, 1H, 15M) using different indicators. Trade executes only when enough agents agree.</p><div class="fr"><select class="fs" id="council-sym"></select><button class="btn bb" onclick="showCouncil()">Show Votes</button><button class="btn ba" onclick="diagnose()">Diagnose</button></div><div id="council-result"></div></div></div>
     <!-- TRADES -->
     <div class="pg" id="pg-trades"><div class="cd"><div class="ct">📊 History</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th>Size</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Why</th></tr></thead><tbody id="htb"><tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr></tbody></table></div></div></div>
     <!-- NEWS -->
@@ -234,6 +234,25 @@ function tfSummary(tf){
     else parts.push('Short-term EMA below long-term (price trending down)');
   }
   return parts.join('. ')+'.';
+}
+
+async function diagnose(){
+  const sym=document.getElementById('council-sym').value;const box=document.getElementById('council-result');
+  box.innerHTML='<span style="color:var(--am)">Running full pipeline diagnostic for '+sym+'...</span>';
+  const d=await api('/api/bot/diagnose/'+sym);
+  if(d.error){box.innerHTML='<span style="color:var(--re)">Error: '+d.error+'</span>';return}
+  box.innerHTML='<div style="font-family:var(--mono);font-size:11px;line-height:2;background:var(--bg0);border:1px solid var(--b1);border-radius:6px;padding:14px;max-height:500px;overflow-y:auto">'+d.steps.map(s=>{
+    if(s.step==='ERROR')return'<div style="color:var(--re)">ERROR: '+s.error+'</div>';
+    if(s.step==='fetch_15m')return'<div>1. Fetch 15m candles: <span style="color:var(--gr)">'+s.status+'</span> ('+s.candles+' candles)</div>';
+    if(s.step==='analyze')return'<div>2. Analyze: <span style="color:var(--gr)">'+s.status+'</span> | price:$'+s.price?.toFixed(2)+' RSI:'+s.rsi+' condition:'+s.condition+' ATR:$'+s.atr+'</div>';
+    if(s.step==='council'){
+      const vc=Object.entries(s.votes||{}).map(([k,v])=>k.replace(/_/g,' ')+':'+v).join(' | ');
+      return'<div>3. Council: <span style="color:'+(s.decision==='hold'?'var(--am)':s.decision==='buy'?'var(--gr)':'var(--re)')+'">'+s.decision.toUpperCase()+'</span> conf:'+s.confidence+'%<br/>   Votes: '+vc+'<br/>   Buy: '+s.buyCount+' agents ('+s.buyScore+'pts) | Sell: '+s.sellCount+' agents ('+s.sellScore+'pts) | Need: '+s.threshold+'pts<br/>   T1: '+s.buyT1+' buy / '+s.sellT1+' sell | Block: '+s.blockReason+'</div>';
+    }
+    if(s.step==='gates')return'<div>4. Gates:<br/>   Balance: $'+s.balance+' | DD: '+s.drawdown+'/'+s.maxDD+(s.ddBlocked?' <span style="color:var(--re)">BLOCKED</span>':' OK')+'<br/>   Cooldown: '+s.cooldownLeft+(s.cooldownBlocked?' <span style="color:var(--re)">BLOCKED</span>':' OK')+'<br/>   Open trades: '+s.openTrades+'/'+s.maxTrades+(s.maxBlocked?' <span style="color:var(--re)">BLOCKED</span>':' OK')+'<br/>   This coin: '+s.openForThisCoin+'/'+s.maxPerCoin+(s.coinBlocked?' <span style="color:var(--re)">BLOCKED</span>':' OK')+'<br/>   Confidence >=40: '+(s.confidenceOk?'OK':'<span style="color:var(--re)">TOO LOW</span>')+'<br/>   Mode: '+s.mode+'</div>';
+    if(s.step==='result')return'<div style="margin-top:8px;padding:10px;border-radius:6px;background:'+(s.wouldTrade?'var(--gd)':'var(--rd)')+'"><strong style="color:'+(s.wouldTrade?'var(--gr)':'var(--re)')+'">'+s.reason+'</strong></div>';
+    return'<div>'+JSON.stringify(s)+'</div>';
+  }).join('')+'</div>';
 }
 
 async function showCouncil(){const sym=document.getElementById('council-sym').value;const box=document.getElementById('council-result');box.innerHTML='<span style="color:var(--am)">Analyzing 3 timeframes + consulting 9 agents...</span>';
