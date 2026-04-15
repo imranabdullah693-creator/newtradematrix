@@ -522,27 +522,42 @@ async function liveOrder(side,sym,qty){
 
 // ═══ MULTI-TIMEFRAME ANALYSIS ═══
 async function multiTimeframeAnalysis(sym){
-  const [c15, c1h, c4h] = await Promise.all([
-    fetchKlines(sym,'15min',100),
-    fetchKlines(sym,'1hour',100),
-    fetchKlines(sym,'4hour',100)
-  ]);
+  // Fetch 15m first (required), then try higher TFs (optional)
+  const c15=await fetchKlines(sym,'15min',100);
   const a15=await analyze(c15,sym);
-  const a1h=await analyze(c1h,sym);
-  const a4h=await analyze(c4h,sym);
-  // Determine higher timeframe bias
-  let htfBias='neutral';
-  if(a4h.condition.includes('bullish')&&a1h.condition.includes('bullish'))htfBias='strong_bullish';
-  else if(a4h.condition.includes('bullish'))htfBias='bullish';
-  else if(a4h.condition.includes('bearish')&&a1h.condition.includes('bearish'))htfBias='strong_bearish';
-  else if(a4h.condition.includes('bearish'))htfBias='bearish';
-  else if(a1h.condition.includes('bullish'))htfBias='mildly_bullish';
-  else if(a1h.condition.includes('bearish'))htfBias='mildly_bearish';
-  // Attach higher timeframe data to 15m analysis
+
+  // Higher timeframes are OPTIONAL — don't let them block trading
+  let htfBias='neutral',h4Data=null,h1Data=null;
+  try{
+    await new Promise(r=>setTimeout(r,500)); // small delay to avoid rate limit
+    const c1h=await fetchKlines(sym,'1hour',60);
+    h1Data=await analyze(c1h,sym);
+  }catch(e){/* 1h failed — ok, use 15m only */}
+
+  try{
+    await new Promise(r=>setTimeout(r,500));
+    const c4h=await fetchKlines(sym,'4hour',50);
+    h4Data=await analyze(c4h,sym);
+  }catch(e){/* 4h failed — ok */}
+
+  // Determine bias from whatever TFs we got
+  if(h4Data&&h1Data){
+    if(h4Data.condition.includes('bullish')&&h1Data.condition.includes('bullish'))htfBias='strong_bullish';
+    else if(h4Data.condition.includes('bearish')&&h1Data.condition.includes('bearish'))htfBias='strong_bearish';
+    else if(h4Data.condition.includes('bullish'))htfBias='bullish';
+    else if(h4Data.condition.includes('bearish'))htfBias='bearish';
+    else if(h1Data.condition.includes('bullish'))htfBias='mildly_bullish';
+    else if(h1Data.condition.includes('bearish'))htfBias='mildly_bearish';
+  }else if(h1Data){
+    if(h1Data.condition.includes('bullish'))htfBias='mildly_bullish';
+    else if(h1Data.condition.includes('bearish'))htfBias='mildly_bearish';
+  }
+  // Even without higher TFs, the 15m analysis + agents still work
+
   a15.htf={
     bias:htfBias,
-    h4:{condition:a4h.condition,rsi:a4h.rsi,ema9:a4h.ema9,ema21:a4h.ema21,ema50:a4h.ema50,macdHist:a4h.macdHist,atr:a4h.atr},
-    h1:{condition:a1h.condition,rsi:a1h.rsi,ema9:a1h.ema9,ema21:a1h.ema21,ema50:a1h.ema50,macdHist:a1h.macdHist,atr:a1h.atr}
+    h4:h4Data?{condition:h4Data.condition,rsi:h4Data.rsi,ema9:h4Data.ema9,ema21:h4Data.ema21,ema50:h4Data.ema50,macdHist:h4Data.macdHist,atr:h4Data.atr}:null,
+    h1:h1Data?{condition:h1Data.condition,rsi:h1Data.rsi,ema9:h1Data.ema9,ema21:h1Data.ema21,ema50:h1Data.ema50,macdHist:h1Data.macdHist,atr:h1Data.atr}:null
   };
   return a15;
 }
@@ -553,7 +568,7 @@ async function tick(){
   try{
     await fetchNews();
     // Only scan 8 coins per tick to avoid KuCoin rate limits (30 coins / 8 = ~4 ticks to scan all)
-    const batchSize=8;
+    const batchSize=5;
     const batch=[];
     for(let i=0;i<batchSize&&i<bot.symbols.length;i++){
       batch.push(bot.symbols[(tickIndex+i)%bot.symbols.length]);
@@ -775,6 +790,58 @@ app.get('/api/bot/analysis/:sym',mw,async(req,res)=>{
 app.get('/api/bot/news',mw,async(req,res)=>{try{const n=await fetchNews();const s=await getSentiment();res.json({success:true,articles:n.articles,coinSentiment:n.sentiment,overall:n.overall,fearGreed:s})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/bot/backtest',mw,async(req,res)=>{try{const{symbol='BTC-USDT',requiredAgents=4,periods=500}=req.body||{};res.json({success:true,result:await backtest(symbol,requiredAgents,periods)})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/bot/close/:id',mw,(req,res)=>{const t=bot.openTrades.find(x=>x.id===req.params.id);if(!t)return res.status(404).json({error:'Not found'});closeTrade(t,bot.lastAnalysis[t.symbol]?.price||t.entryPrice,'manual');res.json({success:true})});
+
+// Diagnostic: test full pipeline for one coin
+app.get('/api/bot/diagnose/:sym',mw,async(req,res)=>{
+  const sym=req.params.sym;const steps=[];
+  try{
+    // Step 1: Fetch 15m candles
+    steps.push({step:'fetch_15m',status:'trying'});
+    const c15=await fetchKlines(sym,'15min',100);
+    steps.push({step:'fetch_15m',status:'ok',candles:c15.length});
+
+    // Step 2: Analyze
+    steps.push({step:'analyze',status:'trying'});
+    const a=await analyze(c15,sym);
+    steps.push({step:'analyze',status:'ok',price:a.price,rsi:a.rsi?.toFixed(1),condition:a.condition,atr:a.atr?.toFixed(2)});
+
+    // Step 3: Council vote
+    steps.push({step:'council',status:'trying'});
+    const council=councilVote(a,bot.requiredAgents);
+    steps.push({step:'council',status:'ok',decision:council.decision,confidence:council.confidence,
+      buyCount:council.buyCount,sellCount:council.sellCount,
+      buyScore:council.buyScore,sellScore:council.sellScore,
+      threshold:council.weightThreshold,
+      buyT1:council.buyT1,sellT1:council.sellT1,
+      blockReason:council.blockReason||'none',
+      votes:Object.fromEntries(Object.entries(council.votes).map(([k,v])=>[k,v.vote+'('+v.confidence+'%)']))
+    });
+
+    // Step 4: Check gates
+    const bal=getCurBal();
+    const dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0;
+    const cooldownLeft=bot.cooldown[sym]?Math.max(0,300000-(Date.now()-bot.cooldown[sym])):0;
+    const openForSym=bot.openTrades.filter(t=>t.symbol===sym).length;
+    steps.push({step:'gates',
+      balance:Math.round(bal*100)/100,
+      drawdown:dd.toFixed(1)+'%',maxDD:bot.maxDrawdownPct+'%',ddBlocked:dd>=bot.maxDrawdownPct,
+      cooldownLeft:Math.round(cooldownLeft/1000)+'s',cooldownBlocked:cooldownLeft>0,
+      openTrades:bot.openTrades.length,maxTrades:bot.maxOpenTrades,maxBlocked:bot.openTrades.length>=bot.maxOpenTrades,
+      openForThisCoin:openForSym,maxPerCoin:2,coinBlocked:openForSym>=2,
+      confidenceOk:council.confidence>=40,
+      mode:bot.mode
+    });
+
+    // Step 5: Would it trade?
+    const wouldTrade=council.decision!=='hold'&&council.confidence>=40&&dd<bot.maxDrawdownPct&&cooldownLeft<=0&&bot.openTrades.length<bot.maxOpenTrades&&openForSym<2;
+    steps.push({step:'result',wouldTrade,decision:council.decision,reason:wouldTrade?'ALL GATES PASSED — trade would execute':'Blocked — see gates above'});
+
+    res.json({success:true,symbol:sym,steps});
+  }catch(e){
+    steps.push({step:'ERROR',error:e.message});
+    res.json({success:false,symbol:sym,steps,error:e.message});
+  }
+});
 app.get('/api/bot/wallet',mw,async(req,res)=>{
   if(!bot.credentials)return res.json({connected:false});
   try{const{apiKey,apiSecret,passphrase}=bot.credentials;const ep='/api/v1/accounts?type=trade';const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});const d=await safeJSON(r);if(d.code!=='200000')return res.json({connected:false,error:d.msg});
