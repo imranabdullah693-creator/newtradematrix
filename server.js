@@ -332,62 +332,105 @@ const AGENTS={
   }
 };
 
-// ═══ COUNCIL VOTE (multi-timeframe aware) ═══
+// ═══ AGENT TIERS — harder to manipulate = higher weight ═══
+const AGENT_TIERS={
+  // TIER 1 (weight 3x) — Hardest to manipulate
+  // Multi-TF trends, math-based levels, external sentiment — whales can't fake these
+  trend_master:    {tier:1,weight:3,why:'Multi-TF EMA alignment is nearly impossible to fake'},
+  fibonacci_analyst:{tier:1,weight:3,why:'Math-based price levels from historical structure'},
+  atr_volatility:  {tier:1,weight:3,why:'Volatility patterns are structural, not easily spoofed'},
+  sentiment_analyst:{tier:1,weight:3,why:'External data (Fear&Greed, world news) outside exchange control'},
+
+  // TIER 2 (weight 2x) — Moderate manipulation risk
+  // Lagging indicators derived from price — some buffer against fakes
+  macd_specialist:  {tier:2,weight:2,why:'Lagging EMA derivative — harder to fake than raw price'},
+  bollinger_trader: {tier:2,weight:2,why:'Statistical bands with 20-period lookback resist short spikes'},
+  quant_ai:         {tier:2,weight:2,why:'Z-score and ROC use statistical baselines'},
+
+  // TIER 3 (weight 1x) — Easiest to manipulate
+  // Short-term momentum and volume — whales can move these easily
+  momentum_hunter:  {tier:3,weight:1,why:'RSI/StochRSI react to short-term pumps and dumps'},
+  volume_expert:    {tier:3,weight:1,why:'Volume is the most manipulated metric (wash trading, spoofing)'}
+};
+
+// ═══ COUNCIL VOTE (tiered weighted + multi-timeframe) ═══
 function councilVote(a,requiredAgree=4){
   const votes={};
-  for(const[name,fn]of Object.entries(AGENTS))votes[name]=fn(a);
+  for(const[name,fn]of Object.entries(AGENTS)){
+    votes[name]=fn(a);
+    const ti=AGENT_TIERS[name]||{tier:2,weight:2};
+    votes[name].tier=ti.tier;
+    votes[name].weight=ti.weight;
+    votes[name].tierWhy=ti.why;
+  }
+
   const buys=Object.entries(votes).filter(([_,v])=>v.vote==='buy');
   const sells=Object.entries(votes).filter(([_,v])=>v.vote==='sell');
-  let buyConf=buys.length?Math.round(buys.reduce((s,[_,v])=>s+v.confidence,0)/buys.length):0;
-  let sellConf=sells.length?Math.round(sells.reduce((s,[_,v])=>s+v.confidence,0)/sells.length):0;
+
+  // Weighted confidence: Tier 1 votes count 3x, Tier 2 = 2x, Tier 3 = 1x
+  const buyWeightedConf=buys.length?Math.round(buys.reduce((s,[_,v])=>s+v.confidence*v.weight,0)/buys.reduce((s,[_,v])=>s+v.weight,0)):0;
+  const sellWeightedConf=sells.length?Math.round(sells.reduce((s,[_,v])=>s+v.confidence*v.weight,0)/sells.reduce((s,[_,v])=>s+v.weight,0)):0;
+
+  // Weighted vote score (max possible = 3+3+3+3+2+2+2+1+1 = 20)
+  const buyScore=buys.reduce((s,[_,v])=>s+v.weight,0);
+  const sellScore=sells.reduce((s,[_,v])=>s+v.weight,0);
+  const maxScore=Object.values(AGENT_TIERS).reduce((s,t)=>s+t.weight,0); // 20
+
+  // Tier 1 agreement count
+  const buyT1=buys.filter(([_,v])=>v.tier===1).length;
+  const sellT1=sells.filter(([_,v])=>v.tier===1).length;
 
   // Higher timeframe bias adjustments
   const htf=a.htf||{bias:'neutral'};
-  let buyReq=requiredAgree,sellReq=requiredAgree;
   let htfNote='';
+  let buyBonus=0,sellBonus=0;
 
-  if(htf.bias==='strong_bullish'){
-    buyReq=Math.max(2,requiredAgree-1);buyConf=Math.min(buyConf+15,100);
-    sellConf=Math.max(sellConf-20,0);sellReq=requiredAgree+1;
-    htfNote='4H+1H bullish → easier to buy, harder to sell';
-  }else if(htf.bias==='bullish'){
-    buyConf=Math.min(buyConf+10,100);
-    htfNote='4H bullish → buy confidence boosted';
-  }else if(htf.bias==='strong_bearish'){
-    sellReq=Math.max(2,requiredAgree-1);sellConf=Math.min(sellConf+15,100);
-    buyConf=Math.max(buyConf-20,0);buyReq=requiredAgree+1;
-    htfNote='4H+1H bearish → easier to sell, harder to buy';
-  }else if(htf.bias==='bearish'){
-    sellConf=Math.min(sellConf+10,100);
-    htfNote='4H bearish → sell confidence boosted';
-  }else if(htf.bias==='mildly_bullish'){
-    buyConf=Math.min(buyConf+5,100);
-    htfNote='1H mildly bullish';
-  }else if(htf.bias==='mildly_bearish'){
-    sellConf=Math.min(sellConf+5,100);
-    htfNote='1H mildly bearish';
-  }
+  if(htf.bias==='strong_bullish'){buyBonus=3;sellBonus=-3;htfNote='4H+1H bullish → buys boosted, sells penalized'}
+  else if(htf.bias==='bullish'){buyBonus=2;htfNote='4H bullish → buys boosted'}
+  else if(htf.bias==='strong_bearish'){sellBonus=3;buyBonus=-3;htfNote='4H+1H bearish → sells boosted, buys penalized'}
+  else if(htf.bias==='bearish'){sellBonus=2;htfNote='4H bearish → sells boosted'}
+  else if(htf.bias==='mildly_bullish'){buyBonus=1;htfNote='1H mildly bullish'}
+  else if(htf.bias==='mildly_bearish'){sellBonus=1;htfNote='1H mildly bearish'}
 
-  // Also use 15m condition
-  if(a.condition&&a.condition.includes('bearish'))sellReq=Math.max(2,sellReq-1);
-  if(a.condition&&a.condition.includes('bullish'))buyReq=Math.max(2,buyReq-1);
+  const adjBuyScore=buyScore+buyBonus;
+  const adjSellScore=sellScore+sellBonus;
+
+  // Threshold: need at least 50% of weighted score (10 out of 20)
+  // AND at least 2 Tier 1 agents must agree (anti-manipulation gate)
+  const weightThreshold=Math.max(8,requiredAgree*2.5); // scales with settings
+  const t1Required=2; // minimum Tier 1 agents needed
 
   let decision='hold',conf=0,agreeing=0;
-  const buyMet=buys.length>=buyReq;
-  const sellMet=sells.length>=sellReq;
+
+  const buyMet=adjBuyScore>=weightThreshold&&buyT1>=t1Required&&buys.length>=requiredAgree;
+  const sellMet=adjSellScore>=weightThreshold&&sellT1>=t1Required&&sells.length>=requiredAgree;
 
   if(buyMet&&sellMet){
-    if(sellConf>=buyConf){decision='sell';conf=sellConf;agreeing=sells.length}
-    else{decision='buy';conf=buyConf;agreeing=buys.length}
-  }else if(buyMet){decision='buy';conf=buyConf;agreeing=buys.length}
-  else if(sellMet){decision='sell';conf=sellConf;agreeing=sells.length}
+    if(adjSellScore>adjBuyScore||(adjSellScore===adjBuyScore&&sellWeightedConf>=buyWeightedConf)){decision='sell';conf=sellWeightedConf;agreeing=sells.length}
+    else{decision='buy';conf=buyWeightedConf;agreeing=buys.length}
+  }else if(buyMet){decision='buy';conf=buyWeightedConf;agreeing=buys.length}
+  else if(sellMet){decision='sell';conf=sellWeightedConf;agreeing=sells.length}
 
+  // Bonus for overwhelming agreement
   if(agreeing>=8)conf=Math.min(conf+20,100);
   else if(agreeing>=7)conf=Math.min(conf+15,100);
   else if(agreeing>=6)conf=Math.min(conf+10,100);
-  else if(agreeing>=5)conf=Math.min(conf+5,100);
 
-  return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,buyCount:buys.length,sellCount:sells.length,buyReq,sellReq,htf:htf.bias,htfNote,h4:htf.h4||null,h1:htf.h1||null};
+  // Why was it blocked (for logging)
+  let blockReason='';
+  if(decision==='hold'){
+    if(buys.length>=requiredAgree&&buyT1<t1Required)blockReason=`Buy blocked: only ${buyT1} Tier 1 agents agree (need ${t1Required})`;
+    else if(sells.length>=requiredAgree&&sellT1<t1Required)blockReason=`Sell blocked: only ${sellT1} Tier 1 agents agree (need ${t1Required})`;
+    else if(buys.length>=requiredAgree&&adjBuyScore<weightThreshold)blockReason=`Buy blocked: weighted score ${adjBuyScore}/${weightThreshold} (too many low-tier votes)`;
+    else if(sells.length>=requiredAgree&&adjSellScore<weightThreshold)blockReason=`Sell blocked: weighted score ${adjSellScore}/${weightThreshold} (too many low-tier votes)`;
+  }
+
+  return{decision,confidence:conf,agreeing,total:Object.keys(AGENTS).length,votes,
+    buyCount:buys.length,sellCount:sells.length,
+    buyScore:adjBuyScore,sellScore:adjSellScore,maxScore,weightThreshold,
+    buyT1,sellT1,t1Required,
+    htf:htf.bias,htfNote,h4:htf.h4||null,h1:htf.h1||null,
+    blockReason};
 }
 
 // ═══ BOT STATE ═══
@@ -535,9 +578,10 @@ async function tick(){
         // ═══ COUNCIL VOTE ═══
         const council=councilVote(a,bot.requiredAgents);
         bot.lastCouncil[sym]=council;
-        // Log significant sell signals even if not enough agree yet
-        if(council.sellCount>=2&&council.decision==='hold'){
-          botLog(`${sym.replace('-USDT','')} ${council.buyCount}buy/${council.sellCount}sell (need ${council.sellReq}) — watching`);
+        // Log why trades are blocked
+        if(council.blockReason){botLog(`${sym.replace('-USDT','')} ${council.blockReason}`)}
+        else if(council.sellCount>=2&&council.decision==='hold'){
+          botLog(`${sym.replace('-USDT','')} ${council.buyCount}buy(${council.buyScore}pts)/${council.sellCount}sell(${council.sellScore}pts) T1:${council.buyT1}b/${council.sellT1}s — hold`);
         }
         if(council.decision==='hold')continue;
         if(council.confidence<50)continue;
