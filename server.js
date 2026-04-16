@@ -521,12 +521,58 @@ function closeTrade(t,price,reason){
   botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(2)} | size:$${(t.usdAmount||0).toFixed(2)} | lev:${t.leverage||1}x | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
 }
 
-async function liveOrder(side,sym,qty){
+// Symbol info cache (increments, minimums from KuCoin)
+let symbolInfoCache={data:{},updated:0};
+async function getSymbolInfo(sym){
+  // Refresh every 1 hour
+  if(Date.now()-symbolInfoCache.updated<3600000&&symbolInfoCache.data[sym])return symbolInfoCache.data[sym];
+  try{
+    const r=await fetch('https://api.kucoin.com/api/v2/symbols');
+    const d=await safeJSON(r);
+    if(d.code==='200000'&&d.data){
+      const info={};
+      for(const s of d.data){
+        info[s.symbol]={
+          baseIncrement:+s.baseIncrement,  // e.g., 0.00001 for BTC
+          quoteIncrement:+s.quoteIncrement,
+          baseMinSize:+s.baseMinSize,       // minimum coins
+          quoteMinSize:+s.quoteMinSize,     // minimum $
+          priceIncrement:+s.priceIncrement
+        };
+      }
+      symbolInfoCache={data:info,updated:Date.now()};
+      console.log('Symbol info cached:',Object.keys(info).length,'symbols');
+    }
+  }catch(e){console.log('Symbol info err:',e.message)}
+  return symbolInfoCache.data[sym]||{baseIncrement:0.001,baseMinSize:0.001,quoteMinSize:1};
+}
+
+// Round quantity to symbol's increment
+function roundToIncrement(qty,increment){
+  if(!increment||increment===0)return qty;
+  const decimals=Math.max(0,-Math.floor(Math.log10(increment)));
+  return Math.floor(qty/increment)*increment;
+}
+
+async function liveOrder(side,sym,usdAmount,price){
   if(!bot.credentials)throw new Error('No credentials');
+  // Get KuCoin's rules for this symbol
+  const info=await getSymbolInfo(sym);
+  // Calculate quantity from USD amount
+  let qty=usdAmount/price;
+  // Round to valid increment
+  qty=roundToIncrement(qty,info.baseIncrement);
+  // Check minimums
+  if(qty<info.baseMinSize)throw new Error(`qty ${qty} < min ${info.baseMinSize}`);
+  if(qty*price<info.quoteMinSize)throw new Error(`value $${(qty*price).toFixed(2)} < min $${info.quoteMinSize}`);
+
+  const qtyStr=qty.toFixed(Math.max(0,-Math.floor(Math.log10(info.baseIncrement||0.001))));
   const{apiKey,apiSecret,passphrase}=bot.credentials;
-  const ep='/api/v1/orders',body={clientOid:crypto.randomUUID(),side,symbol:sym,type:'market',size:String(qty)};
+  const ep='/api/v1/orders',body={clientOid:crypto.randomUUID(),side,symbol:sym,type:'market',size:qtyStr};
   const r=await fetch('https://api.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
-  const d=await safeJSON(r);if(d.code!=='200000')throw new Error(d.msg||'Order failed');return d.data;
+  const d=await safeJSON(r);
+  if(d.code!=='200000')throw new Error(d.msg||'Order failed');
+  return{...d.data,qty,price};
 }
 
 // ═══ MULTI-TIMEFRAME ANALYSIS ═══
@@ -694,21 +740,23 @@ async function tick(){
           if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,'spot',autoLev);
           else if(council.decision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council,autoLev);
         }else{
-          // LIVE MODE — real orders with fill tracking
+          // LIVE MODE — only BUY on spot (shorts need futures account which most users don't have)
+          if(council.decision==='sell'){
+            botLog(`${coin} SKIP: cannot short on spot (would need KuCoin Futures account). Only BUY orders execute in live mode.`);
+            continue;
+          }
           try{
-            const qty=(posUSD/price).toFixed(6);
-            const orderResult=await liveOrder(council.decision,sym,qty);
+            const orderResult=await liveOrder(council.decision,sym,posUSD,price);
             const orderId=orderResult.orderId;
-            // Fetch actual fill details
-            let fillPrice=price,fillQty=posUSD/price,fillFee=0;
+            let fillPrice=orderResult.price||price,fillQty=orderResult.qty||(posUSD/price),fillFee=0;
             try{
-              await new Promise(r=>setTimeout(r,2000)); // wait for fill
+              await new Promise(r=>setTimeout(r,2000));
               const fillData=await fetchOrderFill(orderId);
-              if(fillData){fillPrice=fillData.price;fillQty=fillData.qty;fillFee=fillData.fee}
+              if(fillData&&fillData.filled){fillPrice=fillData.price;fillQty=fillData.qty;fillFee=fillData.fee}
             }catch{}
             const realUSD=fillPrice*fillQty;
-            bot.openTrades.push({id:crypto.randomUUID().slice(0,8),orderId,symbol:sym,side:council.decision,type:bot.tradingType,leverage:autoLev,entryPrice:fillPrice,qty:fillQty,usdAmount:realUSD,margin:realUSD/(autoLev>1?autoLev:1),sl,tp,confidence:council.confidence,agreeing:council.agreeing,fee:fillFee,openTime:new Date().toISOString(),status:'open',highSince:fillPrice,trailingSl:bot.trailingStop?sl:null,isLive:true});
-            botLog(`LIVE ${council.decision.toUpperCase()} ${sym} @$${fillPrice.toFixed(2)} | size:$${realUSD.toFixed(2)} | lev:${autoLev}x | SL:${slPct}% | ${council.agreeing}/${council.total} agents | fee:$${fillFee.toFixed(4)}`);
+            bot.openTrades.push({id:crypto.randomUUID().slice(0,8),orderId,symbol:sym,side:council.decision,type:'spot',leverage:1,entryPrice:fillPrice,qty:fillQty,usdAmount:realUSD,margin:realUSD,sl,tp,confidence:council.confidence,agreeing:council.agreeing,fee:fillFee,openTime:new Date().toISOString(),status:'open',highSince:fillPrice,trailingSl:bot.trailingStop?sl:null,isLive:true});
+            botLog(`LIVE BUY ${sym} @$${fillPrice.toFixed(4)} | size:$${realUSD.toFixed(2)} | qty:${fillQty.toFixed(6)} | SL:${slPct}% | ${council.agreeing}/${council.total} agents`);
             saveState();
           }catch(e){botLog(`ORDER ERR ${sym}: ${e.message}`)}
         }
