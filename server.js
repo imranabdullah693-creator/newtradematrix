@@ -679,39 +679,58 @@ async function futuresOrder(side,spotSym,usdAmount,price,leverage){
   const info=await getFuturesInfo(spotSym);
   if(!info)throw new Error(`No futures contract for ${spotSym}`);
 
-  const contracts=Math.floor((usdAmount*leverage)/(price*info.multiplier));
-  if(contracts<info.lotSize)throw new Error(`contracts ${contracts} < min lot ${info.lotSize}`);
-
-  const{apiKey,apiSecret,passphrase}=bot.credentials;
-  const ep='/api/v1/orders';
-  // Try with user's configured margin mode first
-  const marginMode=bot.marginMode||'ISOLATED';  // default ISOLATED (safer)
-  const body={
-    clientOid:crypto.randomUUID(),
-    side,
-    symbol:info.contract,
-    type:'market',
-    size:contracts,
-    leverage:String(leverage),
-    marginMode:marginMode  // 'ISOLATED' or 'CROSS'
-  };
-  let r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
-  let d=await safeJSON(r);
-  // If margin mode mismatch, try the other one
-  if(d.code!=='200000'&&d.msg&&d.msg.toLowerCase().includes('margin mode')){
-    const otherMode=marginMode==='ISOLATED'?'CROSS':'ISOLATED';
-    body.marginMode=otherMode;
-    body.clientOid=crypto.randomUUID();
-    console.log('Retrying with marginMode='+otherMode);
-    r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
-    d=await safeJSON(r);
-    if(d.code==='200000'){
-      bot.marginMode=otherMode;  // remember for next time
-      saveSettings();
-    }
+  async function attemptOrder(contracts,marginMode){
+    if(contracts<info.lotSize)throw new Error(`contracts ${contracts} < min lot ${info.lotSize}`);
+    const{apiKey,apiSecret,passphrase}=bot.credentials;
+    const ep='/api/v1/orders';
+    const body={
+      clientOid:crypto.randomUUID(),
+      side,
+      symbol:info.contract,
+      type:'market',
+      size:contracts,
+      leverage:String(leverage),
+      marginMode:marginMode
+    };
+    const r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
+    return{data:await safeJSON(r),contracts};
   }
-  if(d.code!=='200000')throw new Error('Futures: '+(d.msg||'Order failed'));
-  return{orderId:d.data.orderId,qty:contracts*info.multiplier,price,contracts};
+
+  let contracts=Math.floor((usdAmount*leverage)/(price*info.multiplier));
+  let marginMode=bot.marginMode||'ISOLATED';
+  let result=await attemptOrder(contracts,marginMode);
+
+  // Retry with opposite margin mode if mismatch
+  if(result.data.code!=='200000'&&result.data.msg&&result.data.msg.toLowerCase().includes('margin mode')){
+    const otherMode=marginMode==='ISOLATED'?'CROSS':'ISOLATED';
+    console.log('Retrying with marginMode='+otherMode);
+    result=await attemptOrder(contracts,otherMode);
+    if(result.data.code==='200000'){bot.marginMode=otherMode;saveSettings()}
+    marginMode=otherMode;
+  }
+
+  // Retry with smaller sizes on insufficient balance
+  let attempts=0;
+  while(result.data.code!=='200000'&&result.data.msg&&result.data.msg.toLowerCase().includes('insufficient')&&attempts<4){
+    attempts++;
+    // Parse required amount if KuCoin tells us
+    const match=result.data.msg.match(/(\d+\.?\d*)\s*is required/i);
+    if(match){
+      const required=+match[1];
+      // If KuCoin says "28.90 required" and we had $25 margin, that's 15% short. Reduce position size accordingly.
+      const currentMargin=(contracts*price*info.multiplier)/leverage;
+      const ratio=currentMargin/required;
+      contracts=Math.floor(contracts*ratio*0.9); // 10% extra safety
+    }else{
+      contracts=Math.floor(contracts*0.7); // blind reduce to 70%
+    }
+    if(contracts<info.lotSize){throw new Error('Insufficient balance even at minimum lot size');}
+    console.log(`Retry ${attempts}: reducing to ${contracts} contracts`);
+    result=await attemptOrder(contracts,marginMode);
+  }
+
+  if(result.data.code!=='200000')throw new Error('Futures: '+(result.data.msg||'Order failed'));
+  return{orderId:result.data.data.orderId,qty:result.contracts*info.multiplier,price,contracts:result.contracts};
 }
 
 // Close futures position (opposite side)
@@ -872,17 +891,18 @@ async function tick(){
         }
 
         // Position sizing
+        // Position sizing
         const riskUSD=bal*(bot.riskPct/100);const slDist=atr*bot.slATR;
         let posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
 
         // KuCoin minimums
         const minSize=bot.tradingType==='spot'?1:5;
 
-        // CRITICAL: subtract margin already locked in open trades
+        // Subtract margin already locked in open trades
         const lockedMargin=bot.openTrades.reduce((s,t)=>s+(t.margin||t.usdAmount||0),0);
         const availableBal=Math.max(0,bal-lockedMargin);
 
-        // Divide available balance across remaining trade slots (don't blow it all on one coin)
+        // Divide available balance across remaining trade slots
         const remainingSlots=Math.max(1,bot.maxOpenTrades-bot.openTrades.length);
         const perTradeBudget=availableBal/remainingSlots;
 
@@ -890,25 +910,28 @@ async function tick(){
 
         if(bot.tradingType==='spot'){
           if(useSmall){
-            // Use per-trade budget (divides balance across slots)
             posUSD=perTradeBudget*0.95;
           }else{
             posUSD=Math.min(perTradeBudget*0.95,posUSD);
           }
           autoLev=1;
         }else{
-          // Futures: each trade can use perTradeBudget as margin × leverage
+          // Futures: KuCoin needs margin + fees + liquidation buffer
+          // Real usable margin is ~60% of perTradeBudget (leaves 40% for fees/buffer/slippage)
+          const realMargin=perTradeBudget*0.6;
           if(useSmall){
-            posUSD=perTradeBudget*0.9*bot.leverage;
+            posUSD=realMargin*bot.leverage;
             autoLev=bot.leverage;
           }else{
-            posUSD=Math.min(perTradeBudget*0.9*bot.leverage,posUSD);
+            posUSD=Math.min(realMargin*bot.leverage,posUSD);
           }
         }
 
-        const marginRequired=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
-        if(marginRequired>availableBal){
-          botLog(`${coin} SKIP: need $${marginRequired.toFixed(2)} margin but only $${availableBal.toFixed(2)} available (locked:$${lockedMargin.toFixed(2)})`);
+        // Final margin check: need 40% buffer on top of theoretical margin for futures
+        const theoreticalMargin=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
+        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*1.4; // 40% buffer for futures fees+buffer
+        if(realNeed>availableBal){
+          botLog(`${coin} SKIP: real need $${realNeed.toFixed(2)} (margin $${theoreticalMargin.toFixed(2)} +40% buffer) > available $${availableBal.toFixed(2)}`);
           continue;
         }
 
