@@ -130,8 +130,25 @@ async function analyze(candles,sym='BTC-USDT'){
   let cond='neutral';
   if(e9&&e21&&e50&&r!==null){const diff=((e9-e21)/e21)*100;if(Math.abs(diff)<0.3&&r>40&&r<60&&ts==='weak')cond='sideways';else if(e9>e21&&e21>e50&&r>50)cond=ts==='strong'?'strong_bullish':'bullish';else if(e9<e21&&e21<e50&&r<50)cond=ts==='strong'?'strong_bearish':'bearish';else if(e9>e21)cond='mildly_bullish';else cond='mildly_bearish'}
   const obvSma=TA.sma(obv,20);
-  return{price:L(c),condition:cond,trendStrength:ts,ema9:e9,ema21:e21,ema50:e50,rsi:r,prevRsi:P(rsi),atr:L(atr),macdLine:L(macd.line),macdSignal:L(macd.signal),macdHist:L(macd.hist),prevMacdHist:P(macd.hist),bbUpper:L(bb.upper),bbLower:L(bb.lower),bbSma:L(bb.sma),stochK:L(sr.k),stochD:L(sr.d),fib,vwap:L(vwap),adx:adxVal,diPlus:L(adx.diPlus),diMinus:L(adx.diMinus),obvTrend:L(obv)>L(obvSma)?'bullish':'bearish',volTrend,sentiment,news:{coin:coinNews,overall:news.overall},support:fib.nearestSupport,resistance:fib.nearestResistance,inGoldenPocket:fib.inGoldenPocket}
+
+  // BTC CORRELATION: attach BTC context to every non-BTC analysis
+  // Since altcoins often follow BTC, agents need to know BTC's state
+  let btcContext=null;
+  if(coin!=='BTC'&&btcAnalysisCache&&Date.now()-btcAnalysisCache.time<600000){
+    btcContext={
+      condition:btcAnalysisCache.condition,
+      rsi:btcAnalysisCache.rsi,
+      priceChange1h:btcAnalysisCache.priceChange1h,
+      priceChange4h:btcAnalysisCache.priceChange4h,
+      trendStrength:btcAnalysisCache.trendStrength
+    };
+  }
+
+  return{price:L(c),condition:cond,trendStrength:ts,ema9:e9,ema21:e21,ema50:e50,rsi:r,prevRsi:P(rsi),atr:L(atr),macdLine:L(macd.line),macdSignal:L(macd.signal),macdHist:L(macd.hist),prevMacdHist:P(macd.hist),bbUpper:L(bb.upper),bbLower:L(bb.lower),bbSma:L(bb.sma),stochK:L(sr.k),stochD:L(sr.d),fib,vwap:L(vwap),adx:adxVal,diPlus:L(adx.diPlus),diMinus:L(adx.diMinus),obvTrend:L(obv)>L(obvSma)?'bullish':'bearish',volTrend,sentiment,news:{coin:coinNews,overall:news.overall},support:fib.nearestSupport,resistance:fib.nearestResistance,inGoldenPocket:fib.inGoldenPocket,btc:btcContext,coin}
 }
+
+// BTC analysis cache - updated every tick before alt analysis
+let btcAnalysisCache=null;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRADING COUNCIL — 7 SPECIALIST AGENTS (BALANCED BUY/SELL)
@@ -330,6 +347,52 @@ const AGENTS={
     }
     if(score>0)return{vote:'buy',confidence:Math.min(40+score,85),reason:reasons.join(' ')};
     return{vote:'sell',confidence:Math.min(40+Math.abs(score),85),reason:reasons.join(' ')};
+  },
+
+  // NEW AGENT: BTC CORRELATION — most alts follow BTC
+  btc_correlation(a){
+    // Skip this agent for BTC itself
+    if(a.coin==='BTC')return{vote:'hold',confidence:0,reason:'This IS BTC — no correlation check needed'};
+    if(!a.btc)return{vote:'hold',confidence:0,reason:'No BTC context available yet'};
+
+    const btc=a.btc;const selfTrend=a.condition||'neutral';
+    const btcDumping=btc.priceChange1h<-1.5||btc.priceChange4h<-3;
+    const btcPumping=btc.priceChange1h>1.5||btc.priceChange4h>3;
+    const btcBullish=btc.condition.includes('bullish');
+    const btcBearish=btc.condition.includes('bearish');
+
+    // STRONG SIGNAL: BTC is dumping hard — almost all alts will follow
+    if(btcDumping){
+      return{vote:'sell',confidence:85,reason:`BTC dumping (1h:${btc.priceChange1h.toFixed(1)}%, 4h:${btc.priceChange4h.toFixed(1)}%). Alts almost always follow BTC down, often harder. Short or stay out.`};
+    }
+
+    // STRONG SIGNAL: BTC pumping hard — alts typically follow
+    if(btcPumping){
+      return{vote:'buy',confidence:80,reason:`BTC pumping (1h:+${btc.priceChange1h.toFixed(1)}%, 4h:+${btc.priceChange4h.toFixed(1)}%). Alts usually follow BTC up. Riding the wave.`};
+    }
+
+    // MODERATE: BTC and alt both bullish = confirmed risk-on
+    if(btcBullish&&selfTrend.includes('bullish')){
+      return{vote:'buy',confidence:65,reason:`BTC (${btc.condition}, RSI:${btc.rsi?.toFixed(0)}) and this alt both bullish — confirmed risk-on environment.`};
+    }
+
+    // MODERATE: BTC and alt both bearish = confirmed risk-off
+    if(btcBearish&&selfTrend.includes('bearish')){
+      return{vote:'sell',confidence:65,reason:`BTC (${btc.condition}) and this alt both bearish — risk-off, trend confirmed.`};
+    }
+
+    // DIVERGENCE WARNING: Alt is bullish but BTC is bearish
+    if(btcBearish&&selfTrend.includes('bullish')){
+      return{vote:'hold',confidence:0,reason:`WARNING: This alt shows bullish signs but BTC is bearish. Alts rarely sustain rallies against BTC weakness. Wait for BTC to confirm.`};
+    }
+
+    // DIVERGENCE: Alt bearish but BTC bullish — might be coin-specific issue
+    if(btcBullish&&selfTrend.includes('bearish')){
+      return{vote:'sell',confidence:50,reason:`This alt bearish despite BTC bullish — coin-specific weakness. Better alts available.`};
+    }
+
+    // BTC flat — let other agents decide without correlation bias
+    return{vote:'hold',confidence:0,reason:`BTC neutral (${btc.condition}, 1h:${btc.priceChange1h?.toFixed(1)||0}%). No strong correlation signal, let other agents decide.`};
   }
 };
 
@@ -337,22 +400,20 @@ const AGENTS={
 // ═══ AGENT TIERS — harder to manipulate = higher weight ═══
 const AGENT_TIERS={
   // TIER 1 (weight 3x) — Hardest to manipulate
-  // Multi-TF trends, math-based levels, external sentiment — whales can't fake these
   trend_master:    {tier:1,weight:3,why:'Multi-TF EMA alignment is nearly impossible to fake'},
   fibonacci_analyst:{tier:1,weight:3,why:'Math-based price levels from historical structure'},
   atr_volatility:  {tier:1,weight:3,why:'Volatility patterns are structural, not easily spoofed'},
-  sentiment_analyst:{tier:1,weight:3,why:'External data (Fear&Greed, world news) outside exchange control'},
+  sentiment_analyst:{tier:1,weight:3,why:'External data outside exchange control'},
+  btc_correlation: {tier:1,weight:3,why:'BTC is the market leader — altcoins almost always follow'},
 
   // TIER 2 (weight 2x) — Moderate manipulation risk
-  // Lagging indicators derived from price — some buffer against fakes
-  macd_specialist:  {tier:2,weight:2,why:'Lagging EMA derivative — harder to fake than raw price'},
-  bollinger_trader: {tier:2,weight:2,why:'Statistical bands with 20-period lookback resist short spikes'},
+  macd_specialist:  {tier:2,weight:2,why:'Lagging EMA derivative'},
+  bollinger_trader: {tier:2,weight:2,why:'Statistical bands with 20-period lookback'},
   quant_ai:         {tier:2,weight:2,why:'Z-score and ROC use statistical baselines'},
 
   // TIER 3 (weight 1x) — Easiest to manipulate
-  // Short-term momentum and volume — whales can move these easily
-  momentum_hunter:  {tier:3,weight:1,why:'RSI/StochRSI react to short-term pumps and dumps'},
-  volume_expert:    {tier:3,weight:1,why:'Volume is the most manipulated metric (wash trading, spoofing)'}
+  momentum_hunter:  {tier:3,weight:1,why:'RSI reacts to short-term pumps'},
+  volume_expert:    {tier:3,weight:1,why:'Volume can be wash-traded'}
 };
 
 // ═══ COUNCIL VOTE (tiered weighted + multi-timeframe) ═══
@@ -618,26 +679,37 @@ async function futuresOrder(side,spotSym,usdAmount,price,leverage){
   const info=await getFuturesInfo(spotSym);
   if(!info)throw new Error(`No futures contract for ${spotSym}`);
 
-  // Calculate contracts. Linear contracts: size = (usdAmount × leverage) / (price × multiplier)
   const contracts=Math.floor((usdAmount*leverage)/(price*info.multiplier));
   if(contracts<info.lotSize)throw new Error(`contracts ${contracts} < min lot ${info.lotSize}`);
 
   const{apiKey,apiSecret,passphrase}=bot.credentials;
   const ep='/api/v1/orders';
+  // Try with user's configured margin mode first
+  const marginMode=bot.marginMode||'ISOLATED';  // default ISOLATED (safer)
   const body={
     clientOid:crypto.randomUUID(),
-    side,  // 'buy' or 'sell'
+    side,
     symbol:info.contract,
     type:'market',
     size:contracts,
-    leverage:String(leverage)
+    leverage:String(leverage),
+    marginMode:marginMode  // 'ISOLATED' or 'CROSS'
   };
-  const r=await fetch('https://api-futures.kucoin.com'+ep,{
-    method:'POST',
-    headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),
-    body:JSON.stringify(body)
-  });
-  const d=await safeJSON(r);
+  let r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
+  let d=await safeJSON(r);
+  // If margin mode mismatch, try the other one
+  if(d.code!=='200000'&&d.msg&&d.msg.toLowerCase().includes('margin mode')){
+    const otherMode=marginMode==='ISOLATED'?'CROSS':'ISOLATED';
+    body.marginMode=otherMode;
+    body.clientOid=crypto.randomUUID();
+    console.log('Retrying with marginMode='+otherMode);
+    r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
+    d=await safeJSON(r);
+    if(d.code==='200000'){
+      bot.marginMode=otherMode;  // remember for next time
+      saveSettings();
+    }
+  }
   if(d.code!=='200000')throw new Error('Futures: '+(d.msg||'Order failed'));
   return{orderId:d.data.orderId,qty:contracts*info.multiplier,price,contracts};
 }
@@ -657,7 +729,8 @@ async function futuresClosePosition(spotSym,side,size){
     symbol:info.contract,
     type:'market',
     size:contracts,
-    reduceOnly:true  // only reduce position, don't open opposite
+    reduceOnly:true,
+    marginMode:bot.marginMode||'ISOLATED'
   };
   const r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
   const d=await safeJSON(r);
@@ -715,8 +788,25 @@ async function tick(){
   try{
     fetchNews().catch(()=>{});
     getSentiment().catch(()=>{});
-    // In live mode, refresh real balance before trading decisions
     if(bot.mode==='live'&&bot.credentials){try{await fetchLiveBalance()}catch(e){botLog('Balance fetch err: '+e.message)}}
+
+    // ALWAYS fetch BTC first so altcoin agents know BTC's state
+    try{
+      const btcCandles=await fetchKlines('BTC-USDT','15min',100);
+      const btcA=await analyze(btcCandles,'BTC-USDT');
+      const c=btcCandles.map(x=>x.close);
+      const priceNow=c[c.length-1];
+      const price1hAgo=c[c.length-5]||priceNow; // 4 x 15min = 1h
+      const price4hAgo=c[c.length-17]||priceNow; // 16 x 15min = 4h
+      btcAnalysisCache={
+        condition:btcA.condition,
+        rsi:btcA.rsi,
+        trendStrength:btcA.trendStrength,
+        priceChange1h:((priceNow-price1hAgo)/price1hAgo)*100,
+        priceChange4h:((priceNow-price4hAgo)/price4hAgo)*100,
+        time:Date.now()
+      };
+    }catch(e){console.log('BTC context fetch err:',e.message)}
 
     const batchSize=5;
     const batch=[];
@@ -781,43 +871,49 @@ async function tick(){
           autoLev=Math.min(autoLev,bot.leverage);
         }
 
-        // Position sizing — for small balances, use fixed % of balance instead of risk-based
+        // Position sizing
         const riskUSD=bal*(bot.riskPct/100);const slDist=atr*bot.slATR;
         let posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
 
         // KuCoin minimums
         const minSize=bot.tradingType==='spot'?1:5;
 
+        // CRITICAL: subtract margin already locked in open trades
+        const lockedMargin=bot.openTrades.reduce((s,t)=>s+(t.margin||t.usdAmount||0),0);
+        const availableBal=Math.max(0,bal-lockedMargin);
+
+        // Divide available balance across remaining trade slots (don't blow it all on one coin)
+        const remainingSlots=Math.max(1,bot.maxOpenTrades-bot.openTrades.length);
+        const perTradeBudget=availableBal/remainingSlots;
+
         const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&bal<100);
 
         if(bot.tradingType==='spot'){
           if(useSmall){
-            posUSD=bal*0.9; // Use 90% of balance for spot trades in small balance mode
+            // Use per-trade budget (divides balance across slots)
+            posUSD=perTradeBudget*0.95;
           }else{
-            posUSD=Math.min(bal*0.9,posUSD);
+            posUSD=Math.min(perTradeBudget*0.95,posUSD);
           }
           autoLev=1;
         }else{
-          // Futures
+          // Futures: each trade can use perTradeBudget as margin × leverage
           if(useSmall){
-            // OVERRIDE: use 50% of balance × max leverage for position size
-            posUSD=bal*0.5*bot.leverage;
+            posUSD=perTradeBudget*0.9*bot.leverage;
             autoLev=bot.leverage;
           }else{
-            // Normal mode: cap by available margin
-            const maxPosByMargin=bal*0.8*bot.leverage;
-            posUSD=Math.min(posUSD,maxPosByMargin);
+            posUSD=Math.min(perTradeBudget*0.9*bot.leverage,posUSD);
           }
         }
 
         const marginRequired=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
-        if(marginRequired>bal*0.9){
-          botLog(`${coin} SKIP: margin $${marginRequired.toFixed(2)} exceeds available $${bal.toFixed(2)}`);
+        if(marginRequired>availableBal){
+          botLog(`${coin} SKIP: need $${marginRequired.toFixed(2)} margin but only $${availableBal.toFixed(2)} available (locked:$${lockedMargin.toFixed(2)})`);
           continue;
         }
 
         if(posUSD<minSize){
-          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (balance:$${bal.toFixed(2)} lev:${autoLev}x smallMode:${bot.smallBalanceMode} useSmall:${useSmall})`);
+          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (available:$${availableBal.toFixed(2)} slots left:${remainingSlots} per-trade:$${perTradeBudget.toFixed(2)})`);
           continue;
         }
 
