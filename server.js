@@ -1154,10 +1154,101 @@ app.get('/debug',(req,res)=>{
 });
 app.get('/api/bot/wallet',mw,async(req,res)=>{
   if(!bot.credentials)return res.json({connected:false});
-  try{const{apiKey,apiSecret,passphrase}=bot.credentials;const ep='/api/v1/accounts?type=trade';const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});const d=await safeJSON(r);if(d.code!=='200000')return res.json({connected:false,error:d.msg});
-  const bals={};for(const a of d.data){const v=parseFloat(a.available);if(v>0)bals[a.currency]=(bals[a.currency]||0)+v}
-  let total=0;try{const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);const pm={USDT:1,USDC:1};if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;for(const[c,a]of Object.entries(bals))total+=(pm[c]||0)*a}catch{}
-  res.json({connected:true,balances:bals,totalUSD:Math.round(total*100)/100})}catch(e){res.json({connected:false,error:e.message})}
+  try{
+    const{apiKey,apiSecret,passphrase}=bot.credentials;
+    const bals={};let spotUSD=0,futuresUSD=0,mainUSD=0;
+
+    // Check ALL spot account types (trade + main + margin)
+    for(const type of ['trade','main','margin']){
+      try{
+        const ep='/api/v1/accounts?type='+type;
+        const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+        const d=await safeJSON(r);
+        if(d.code==='200000'&&d.data){
+          for(const a of d.data){const v=parseFloat(a.available)+parseFloat(a.holds||0);if(v>0){const key=a.currency+' ('+type+')';bals[key]=v}}
+        }
+      }catch(e){console.log(type+' bal err:',e.message)}
+    }
+
+    // Price map
+    let pm={USDT:1,USDC:1};
+    try{
+      const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);
+      if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;
+    }catch{}
+
+    // Sum spot/main value
+    for(const[k,v] of Object.entries(bals)){
+      const cur=k.split(' ')[0];
+      const usd=(pm[cur]||0)*v;
+      if(k.includes('(trade)'))spotUSD+=usd;
+      else if(k.includes('(main)'))mainUSD+=usd;
+    }
+
+    // Check FUTURES account
+    try{
+      const fep='/api/v1/account-overview?currency=USDT';
+      const fr=await fetch('https://api-futures.kucoin.com'+fep,{headers:kcH('GET',fep,null,apiKey,apiSecret,passphrase)});
+      const fd=await safeJSON(fr);
+      if(fd.code==='200000'&&fd.data){
+        futuresUSD=+fd.data.accountEquity||+fd.data.availableBalance||0;
+        if(futuresUSD>0)bals['USDT (futures)']=futuresUSD;
+      }else{
+        bals['_futures_error']=fd.msg||'Cannot access futures (check API permissions)';
+      }
+    }catch(e){bals['_futures_error']=e.message}
+
+    const total=spotUSD+mainUSD+futuresUSD;
+    res.json({connected:true,balances:bals,totalUSD:Math.round(total*100)/100,spotUSD:Math.round(spotUSD*100)/100,futuresUSD:Math.round(futuresUSD*100)/100,mainUSD:Math.round(mainUSD*100)/100});
+  }catch(e){res.json({connected:false,error:e.message})}
+});
+
+app.post('/api/kucoin/balance',async(req,res)=>{
+  const{apiKey,apiSecret,passphrase}=req.body||{};
+  if(!apiKey||!apiSecret||!passphrase)return res.status(400).json({error:'All required'});
+  try{
+    const bals={};let spotUSD=0,futuresUSD=0,mainUSD=0;
+
+    // Spot/trade/main accounts
+    for(const type of ['trade','main','margin']){
+      try{
+        const ep='/api/v1/accounts?type='+type;
+        const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+        const d=await safeJSON(r);
+        if(d.code==='200000'&&d.data){
+          for(const a of d.data){const v=parseFloat(a.available)+parseFloat(a.holds||0);if(v>0)bals[a.currency+' ('+type+')']=v}
+        }
+      }catch{}
+    }
+
+    let pm={USDT:1,USDC:1};
+    try{
+      const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);
+      if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;
+    }catch{}
+
+    for(const[k,v] of Object.entries(bals)){
+      const cur=k.split(' ')[0];const usd=(pm[cur]||0)*v;
+      if(k.includes('(trade)'))spotUSD+=usd;
+      else if(k.includes('(main)'))mainUSD+=usd;
+    }
+
+    let futuresError=null;
+    try{
+      const fep='/api/v1/account-overview?currency=USDT';
+      const fr=await fetch('https://api-futures.kucoin.com'+fep,{headers:kcH('GET',fep,null,apiKey,apiSecret,passphrase)});
+      const fd=await safeJSON(fr);
+      if(fd.code==='200000'&&fd.data){
+        futuresUSD=+fd.data.accountEquity||+fd.data.availableBalance||0;
+        if(futuresUSD>0)bals['USDT (futures)']=futuresUSD;
+      }else{
+        futuresError=fd.msg||'Cannot access futures — API key may lack futures permissions';
+      }
+    }catch(e){futuresError=e.message}
+
+    const total=spotUSD+mainUSD+futuresUSD;
+    res.json({success:true,balances:bals,totalUSD:total,spotUSD,futuresUSD,mainUSD,futuresError});
+  }catch(e){res.status(500).json({error:e.message})}
 });
 // AI Advisor
 app.post('/api/bot/ai-advice',mw,async(req,res)=>{
@@ -1169,7 +1260,6 @@ app.post('/api/bot/ai-advice',mw,async(req,res)=>{
 });
 
 app.get('/api/prices',async(req,res)=>{try{const r=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const d=await safeJSON(r);if(d.code!=='200000')return res.status(502).json({error:'Feed error'});const prices={};for(const t of d.data.ticker)if(ALL_SYMBOLS.includes(t.symbol))prices[t.symbol]={price:+t.last,change:+t.changeRate*100,vol:+t.volValue};res.json({success:true,prices})}catch(e){res.status(500).json({error:e.message})}});
-app.post('/api/kucoin/balance',async(req,res)=>{const{apiKey,apiSecret,passphrase}=req.body||{};if(!apiKey||!apiSecret||!passphrase)return res.status(400).json({error:'All required'});try{const ep='/api/v1/accounts?type=trade';const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});const d=await safeJSON(r);if(d.code!=='200000')return res.status(400).json({error:d.msg||'Error'});const b={};for(const a of d.data){const v=+a.available;if(v>0)b[a.currency]=(b[a.currency]||0)+v}let t=0;try{const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);const pm={USDT:1,USDC:1};if(pd.code==='200000')for(const x of pd.data.ticker)if(x.symbol.endsWith('-USDT'))pm[x.symbol.replace('-USDT','')]=+x.last||0;for(const[c,a]of Object.entries(b))t+=(pm[c]||0)*a}catch{}res.json({success:true,balances:b,totalUSD:t})}catch(e){res.status(500).json({error:e.message})}});
 
 app.get('/health',(_,res)=>res.json({status:'ok'}));
 app.use(express.static(path.join(__dirname,'public')));
