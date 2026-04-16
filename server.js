@@ -444,7 +444,7 @@ const bot={
   running:false,mode:'paper',tradingType:'combined',
   symbols:ALL_SYMBOLS,intervalMs:45000,intervalId:null,
   requiredAgents:4,
-  riskPct:2,maxDrawdownPct:15,slATR:1.5,tpATR:3.0,trailingStop:true,trailATR:1.0,maxOpenTrades:10,leverage:5,
+  riskPct:2,maxDrawdownPct:15,slATR:1.5,tpATR:3.0,trailingStop:true,trailATR:1.0,maxOpenTrades:10,leverage:5,smallBalanceMode:'auto',
   paperUSD:10000,startBal:10000,peakBal:10000,
   openTrades:[],history:[],totalPnL:0,winCount:0,lossCount:0,
   lastAnalysis:{},lastCouncil:{},log:[],cooldown:{},credentials:null
@@ -460,6 +460,7 @@ function loadSettings(){
     if(s.slATR)bot.slATR=s.slATR;if(s.tpATR)bot.tpATR=s.tpATR;
     if(s.trailingStop!==undefined)bot.trailingStop=s.trailingStop;if(s.trailATR)bot.trailATR=s.trailATR;
     if(s.maxOpenTrades)bot.maxOpenTrades=s.maxOpenTrades;if(s.leverage)bot.leverage=s.leverage;
+    if(s.smallBalanceMode)bot.smallBalanceMode=s.smallBalanceMode;
     if(s.credentials)bot.credentials=s.credentials;
     console.log('✅ Settings loaded: mode='+bot.mode+' type='+bot.tradingType+' agents='+bot.requiredAgents+' creds='+(bot.credentials?'yes':'no'));
   }else{console.log('No settings file found, using defaults')}}catch(e){console.log('Settings load err:',e.message)}
@@ -472,7 +473,7 @@ function loadSettings(){
   }else{console.log('No state file found')}}catch(e){console.log('State load err:',e.message)}
 }
 function saveSettings(){
-  try{const data=JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,credentials:bot.credentials});
+  try{const data=JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,credentials:bot.credentials});
   fs.writeFileSync(SETTINGS_FILE,data);console.log('Settings saved: mode='+bot.mode)}catch(e){console.log('Save err:',e.message)}
 }
 function saveState(){
@@ -648,21 +649,32 @@ async function tick(){
         const riskUSD=bal*(bot.riskPct/100);const slDist=atr*bot.slATR;
         let posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
 
-        // Minimum order size — KuCoin minimum is $1 for spot, $5 for futures
+        // KuCoin minimums
         const minSize=bot.tradingType==='spot'?1:5;
 
-        // For small balances ($<100), use max position size (15% of balance) with max leverage
-        if(bal<100&&bot.tradingType!=='spot'){
-          // Small balance: use 20% of balance * max leverage = effective position
-          posUSD=bal*0.2*bot.leverage;
-          autoLev=bot.leverage;
-        }else if(bal<100){
-          // Small balance spot: use 20% of balance
-          posUSD=bal*0.2;
+        // Determine if we should use aggressive small balance sizing
+        const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&bal<100);
+
+        if(bot.tradingType==='spot'){
+          posUSD=Math.min(bal*0.9,posUSD);
+          autoLev=1;
+        }else{
+          const maxPosByMargin=bal*0.8*bot.leverage;
+          posUSD=Math.min(posUSD,maxPosByMargin);
+          if(useSmall){
+            posUSD=Math.min(bal*0.5*bot.leverage,posUSD);
+            autoLev=bot.leverage;
+          }
+        }
+
+        const marginRequired=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
+        if(marginRequired>bal*0.9){
+          botLog(`${coin} SKIP: margin $${marginRequired.toFixed(2)} exceeds available $${bal.toFixed(2)}`);
+          continue;
         }
 
         if(posUSD<minSize){
-          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (balance:$${bal.toFixed(2)} risk:${bot.riskPct}% lev:${autoLev}x)`);
+          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (balance:$${bal.toFixed(2)} lev:${autoLev}x smallMode:${bot.smallBalanceMode})`);
           continue;
         }
 
@@ -805,7 +817,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;const upnl=Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100;return{...t,currentPrice:cp,unrealizedPnl:upnl,slPct:t.sl?((Math.abs(t.entryPrice-t.sl)/t.entryPrice)*100).toFixed(2)+'%':'—'}}),
     recentHistory:bot.history.slice(-30).reverse(),council:bot.lastCouncil,log:bot.log.slice(-50).reverse(),
     hasCredentials:!!bot.credentials,sentiment:sentimentCache,newsOverall:newsCache.overall,newsSentiment:newsCache.sentiment,recentNews:(newsCache.articles||[]).slice(0,15),
-    settings:{riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents}
+    settings:{riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents}
   });
 });
 
@@ -823,6 +835,7 @@ app.post('/api/bot/settings',mw,async(req,res)=>{
   if(s.leverage!==undefined)bot.leverage=Math.max(1,Math.min(20,+s.leverage));
   if(s.intervalMs!==undefined){bot.intervalMs=Math.max(30000,Math.min(300000,+s.intervalMs));if(bot.running&&bot.intervalId){clearInterval(bot.intervalId);bot.intervalId=setInterval(tick,bot.intervalMs)}}
   if(s.requiredAgents!==undefined)bot.requiredAgents=Math.max(2,Math.min(9,+s.requiredAgents));
+  if(s.smallBalanceMode)bot.smallBalanceMode=s.smallBalanceMode;
   if(s.resetPaper){bot.paperUSD=10000;bot.startBal=10000;bot.peakBal=10000;bot.openTrades=[];bot.history=[];bot.totalPnL=0;bot.winCount=0;bot.lossCount=0;botLog('Paper reset')}
   if(s.resetDrawdown){
     // Re-initialize live baseline to current balance
