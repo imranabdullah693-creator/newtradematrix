@@ -800,56 +800,103 @@ app.get('/api/bot/news',mw,async(req,res)=>{try{const n=await fetchNews();const 
 app.post('/api/bot/backtest',mw,async(req,res)=>{try{const{symbol='BTC-USDT',requiredAgents=4,periods=500}=req.body||{};res.json({success:true,result:await backtest(symbol,requiredAgents,periods)})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/bot/close/:id',mw,(req,res)=>{const t=bot.openTrades.find(x=>x.id===req.params.id);if(!t)return res.status(404).json({error:'Not found'});closeTrade(t,bot.lastAnalysis[t.symbol]?.price||t.entryPrice,'manual');res.json({success:true})});
 
-// Diagnostic: test full pipeline for one coin
+// Diagnostic: test full pipeline for one coin (with timeout)
 app.get('/api/bot/diagnose/:sym',mw,async(req,res)=>{
   const sym=req.params.sym;const steps=[];
+  let done=false;
+  // 15 second hard timeout
+  const timeout=setTimeout(()=>{
+    if(done)return;done=true;
+    steps.push({step:'TIMEOUT',error:'Request took >15s — KuCoin may be slow or rate-limited'});
+    res.json({success:false,symbol:sym,steps,error:'timeout'});
+  },15000);
+
   try{
-    // Step 1: Fetch 15m candles
-    steps.push({step:'fetch_15m',status:'trying'});
+    // Try cached data first
+    if(bot.lastAnalysis[sym]&&bot.lastCouncil[sym]){
+      const a=bot.lastAnalysis[sym];const council=bot.lastCouncil[sym];
+      steps.push({step:'source',data:'Using cached data from last bot scan'});
+      steps.push({step:'analyze',status:'ok',price:a.price,rsi:a.rsi?.toFixed(1),condition:a.condition,atr:a.atr?.toFixed(2)});
+      steps.push({step:'council',status:'ok',decision:council.decision,confidence:council.confidence,
+        buyCount:council.buyCount,sellCount:council.sellCount,
+        buyScore:council.buyScore,sellScore:council.sellScore,
+        threshold:council.weightThreshold,
+        buyT1:council.buyT1,sellT1:council.sellT1,
+        blockReason:council.blockReason||'none',
+        votes:Object.fromEntries(Object.entries(council.votes||{}).map(([k,v])=>[k,v.vote+'('+v.confidence+'%)']))
+      });
+      const bal=getCurBal();
+      const dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0;
+      const cooldownLeft=bot.cooldown[sym]?Math.max(0,300000-(Date.now()-bot.cooldown[sym])):0;
+      const openForSym=bot.openTrades.filter(t=>t.symbol===sym).length;
+      steps.push({step:'gates',balance:Math.round(bal*100)/100,drawdown:dd.toFixed(1)+'%',maxDD:bot.maxDrawdownPct+'%',ddBlocked:dd>=bot.maxDrawdownPct,cooldownLeft:Math.round(cooldownLeft/1000)+'s',cooldownBlocked:cooldownLeft>0,openTrades:bot.openTrades.length,maxTrades:bot.maxOpenTrades,maxBlocked:bot.openTrades.length>=bot.maxOpenTrades,openForThisCoin:openForSym,maxPerCoin:2,coinBlocked:openForSym>=2,confidenceOk:council.confidence>=40,mode:bot.mode,running:bot.running});
+      const wouldTrade=council.decision!=='hold'&&council.confidence>=40&&dd<bot.maxDrawdownPct&&cooldownLeft<=0&&bot.openTrades.length<bot.maxOpenTrades&&openForSym<2&&bot.running;
+      steps.push({step:'result',wouldTrade,decision:council.decision,reason:wouldTrade?'ALL GATES PASSED':'Blocked — bot.running='+bot.running+' decision='+council.decision+' conf='+council.confidence});
+      if(done)return;done=true;clearTimeout(timeout);
+      return res.json({success:true,symbol:sym,steps,cached:true});
+    }
+
+    // No cache — fetch fresh (with timeout)
+    steps.push({step:'source',data:'No cached data for this coin, fetching fresh'});
     const c15=await fetchKlines(sym,'15min',100);
+    if(done)return;
     steps.push({step:'fetch_15m',status:'ok',candles:c15.length});
 
-    // Step 2: Analyze
-    steps.push({step:'analyze',status:'trying'});
     const a=await analyze(c15,sym);
     steps.push({step:'analyze',status:'ok',price:a.price,rsi:a.rsi?.toFixed(1),condition:a.condition,atr:a.atr?.toFixed(2)});
 
-    // Step 3: Council vote
-    steps.push({step:'council',status:'trying'});
     const council=councilVote(a,bot.requiredAgents);
-    steps.push({step:'council',status:'ok',decision:council.decision,confidence:council.confidence,
-      buyCount:council.buyCount,sellCount:council.sellCount,
-      buyScore:council.buyScore,sellScore:council.sellScore,
-      threshold:council.weightThreshold,
-      buyT1:council.buyT1,sellT1:council.sellT1,
-      blockReason:council.blockReason||'none',
-      votes:Object.fromEntries(Object.entries(council.votes).map(([k,v])=>[k,v.vote+'('+v.confidence+'%)']))
-    });
+    steps.push({step:'council',status:'ok',decision:council.decision,confidence:council.confidence,buyCount:council.buyCount,sellCount:council.sellCount,buyScore:council.buyScore,sellScore:council.sellScore,threshold:council.weightThreshold,buyT1:council.buyT1,sellT1:council.sellT1,blockReason:council.blockReason||'none',votes:Object.fromEntries(Object.entries(council.votes).map(([k,v])=>[k,v.vote+'('+v.confidence+'%)']))});
 
-    // Step 4: Check gates
     const bal=getCurBal();
     const dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0;
     const cooldownLeft=bot.cooldown[sym]?Math.max(0,300000-(Date.now()-bot.cooldown[sym])):0;
     const openForSym=bot.openTrades.filter(t=>t.symbol===sym).length;
-    steps.push({step:'gates',
-      balance:Math.round(bal*100)/100,
-      drawdown:dd.toFixed(1)+'%',maxDD:bot.maxDrawdownPct+'%',ddBlocked:dd>=bot.maxDrawdownPct,
-      cooldownLeft:Math.round(cooldownLeft/1000)+'s',cooldownBlocked:cooldownLeft>0,
-      openTrades:bot.openTrades.length,maxTrades:bot.maxOpenTrades,maxBlocked:bot.openTrades.length>=bot.maxOpenTrades,
-      openForThisCoin:openForSym,maxPerCoin:2,coinBlocked:openForSym>=2,
-      confidenceOk:council.confidence>=40,
-      mode:bot.mode
-    });
+    steps.push({step:'gates',balance:Math.round(bal*100)/100,drawdown:dd.toFixed(1)+'%',maxDD:bot.maxDrawdownPct+'%',ddBlocked:dd>=bot.maxDrawdownPct,cooldownLeft:Math.round(cooldownLeft/1000)+'s',cooldownBlocked:cooldownLeft>0,openTrades:bot.openTrades.length,maxTrades:bot.maxOpenTrades,maxBlocked:bot.openTrades.length>=bot.maxOpenTrades,openForThisCoin:openForSym,maxPerCoin:2,coinBlocked:openForSym>=2,confidenceOk:council.confidence>=40,mode:bot.mode,running:bot.running});
 
-    // Step 5: Would it trade?
-    const wouldTrade=council.decision!=='hold'&&council.confidence>=40&&dd<bot.maxDrawdownPct&&cooldownLeft<=0&&bot.openTrades.length<bot.maxOpenTrades&&openForSym<2;
-    steps.push({step:'result',wouldTrade,decision:council.decision,reason:wouldTrade?'ALL GATES PASSED — trade would execute':'Blocked — see gates above'});
+    const wouldTrade=council.decision!=='hold'&&council.confidence>=40&&dd<bot.maxDrawdownPct&&cooldownLeft<=0&&bot.openTrades.length<bot.maxOpenTrades&&openForSym<2&&bot.running;
+    steps.push({step:'result',wouldTrade,decision:council.decision,reason:wouldTrade?'ALL GATES PASSED':'Blocked — bot.running='+bot.running});
 
+    if(done)return;done=true;clearTimeout(timeout);
     res.json({success:true,symbol:sym,steps});
   }catch(e){
+    if(done)return;done=true;clearTimeout(timeout);
     steps.push({step:'ERROR',error:e.message});
     res.json({success:false,symbol:sym,steps,error:e.message});
   }
+});
+
+// PUBLIC debug page — no auth, view in browser
+app.get('/debug',(req,res)=>{
+  res.setHeader('Content-Type','text/html');
+  let h='<html><head><meta http-equiv="refresh" content="10"><title>Debug</title><style>body{font-family:monospace;background:#000;color:#0f0;padding:20px;font-size:12px;line-height:1.5}h2{color:#ff0;border-bottom:1px solid #0f0;margin-top:20px}pre{background:#111;padding:10px;overflow-x:auto}.ok{color:#0f0}.bad{color:#f00}.warn{color:#fa0}</style></head><body>';
+  h+='<h1>TradeMatrix Debug (refreshes every 10s)</h1>';
+  h+='<h2>BOT STATUS</h2><pre>';
+  h+='running: '+(bot.running?'<span class="ok">YES</span>':'<span class="bad">NO — not trading!</span>')+'\n';
+  h+='mode: '+bot.mode+' | type: '+bot.tradingType+'\n';
+  h+='tickCount: '+tickCount+' '+(tickCount===0?'<span class="bad">(BOT NEVER RAN)</span>':tickCount<5?'<span class="warn">(just started)</span>':'<span class="ok">(healthy)</span>')+'\n';
+  h+='requiredAgents: '+bot.requiredAgents+' of '+Object.keys(AGENTS).length+'\n';
+  h+='credentials: '+(bot.credentials?'<span class="ok">yes</span>':'<span class="bad">no</span>')+'\n';
+  h+='openTrades: '+bot.openTrades.length+' | historyCount: '+bot.history.length+'\n';
+  h+='</pre>';
+  h+='<h2>NEWS CACHE</h2><pre>';
+  h+='articles: '+(newsCache.articles?.length||0)+'\n';
+  h+='lastUpdate: '+(newsCache.updated?Math.round((Date.now()-newsCache.updated)/60000)+' min ago':'<span class="bad">NEVER</span>')+'\n';
+  h+='</pre>';
+  h+='<h2>LAST 30 LOG ENTRIES</h2><pre>';
+  if(bot.log.length===0)h+='<span class="bad">NO LOG ENTRIES — bot has never run</span>';
+  else h+=bot.log.slice(-30).map(l=>new Date(l.time).toLocaleTimeString()+' '+l.msg).join('\n');
+  h+='</pre>';
+  h+='<h2>COUNCIL RESULTS (last scan of each coin)</h2><pre>';
+  const ck=Object.keys(bot.lastCouncil);
+  if(ck.length===0)h+='<span class="bad">NO COUNCIL DATA — bot has not analyzed any coins yet</span>';
+  else{
+    for(const s of ck){const c=bot.lastCouncil[s];
+    const col=c.decision==='buy'?'ok':c.decision==='sell'?'bad':'warn';
+    h+=s.padEnd(12)+' <span class="'+col+'">'+c.decision.toUpperCase().padEnd(4)+'</span> conf:'+String(c.confidence).padStart(3)+'% | B:'+c.buyCount+'('+c.buyScore+'pts) S:'+c.sellCount+'('+c.sellScore+'pts) | need '+c.weightThreshold+'pts | T1:'+c.buyT1+'/'+c.sellT1+' | '+(c.blockReason||'')+'\n'}
+  }
+  h+='</pre></body></html>';
+  res.send(h);
 });
 app.get('/api/bot/wallet',mw,async(req,res)=>{
   if(!bot.credentials)return res.json({connected:false});
