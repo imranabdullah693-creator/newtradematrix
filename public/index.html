@@ -89,7 +89,7 @@
       <div class="cd" id="wallet-card"><div class="ct">💰 KuCoin Wallet</div><div id="wallet-content" style="color:var(--t3);font-size:11px">Loading...</div></div>
       <div class="sr" id="stats"></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
-      <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Lev</th><th>Entry</th><th>Now</th><th>uPnL</th><th>SL%</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
+      <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Position</th><th>Margin</th><th>Lev</th><th>Entry</th><th>Now</th><th>uPnL</th><th>SL%</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="10" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
       <div class="cd"><div class="ct">📰 Latest News</div><div id="news-mini" style="max-height:150px;overflow-y:auto;font-size:10px">Loading...</div></div>
       <div class="cd"><div class="ct">📜 Log</div><div class="log" id="logbox">Bot not started.</div></div>
     </div>
@@ -115,6 +115,7 @@
       <div class="fr"><span class="fl">Max DD %</span><input class="fi" id="sdd" type="number" value="15" min="5" max="30"/></div>
       <div class="fr"><span class="fl">SL (ATR x)</span><input class="fi" id="ssl" type="number" value="1.5" min="0.5" max="5" step="0.1"/></div>
       <div class="fr"><span class="fl">TP (ATR x)</span><input class="fi" id="stp" type="number" value="3" min="1" max="10" step="0.5"/></div>
+      <div class="fr"><span class="fl">Daily Target %</span><input class="fi" id="sdaily" type="number" value="1.5" min="0.5" max="10" step="0.5"/></div>
       <div class="fr"><span class="fl">Trailing SL</span><select class="fs" id="strail"><option value="true">On</option><option value="false">Off</option></select></div>
       <div class="fr"><span class="fl">Leverage</span><input class="fi" id="slev" type="number" value="5" min="1" max="20"/></div>
       <div class="fr"><span class="fl">Max Trades</span><input class="fi" id="smax" type="number" value="10" min="1" max="15"/></div>
@@ -171,7 +172,10 @@ async function refresh(){
   document.getElementById('sdot').className='sdot '+(d.running?'on':'off');document.getElementById('stxt').textContent=d.running?'On':'Off';
   const mb=document.getElementById('mbdg');mb.textContent=d.mode.toUpperCase();mb.className='mbdg '+(d.mode==='paper'?'paper':'live');
   document.getElementById('bstart').disabled=d.running;document.getElementById('bstop').disabled=!d.running;
-  if(d.sentiment)document.getElementById('sent-txt').textContent='F&G:'+d.sentiment.value+' | ticks:'+(d.tickCount||0)+' | news:'+(d.newsArticles||0)+(d.newsAge!==null?' ('+Math.round(d.newsAge/60)+'m ago)':'');
+  if(d.sentiment){
+    const dailyStr=d.dailyPnL!==undefined?' | day:'+(d.dailyPnL>=0?'+':'')+d.dailyPnL.toFixed(2)+' ('+(d.dailyPctGain>=0?'+':'')+d.dailyPctGain.toFixed(1)+'%/'+(d.dailyTargetPct||1.5)+'%)'+(d.dailyTargetHit?' 🎯':''):'';
+    document.getElementById('sent-txt').textContent='F&G:'+d.sentiment.value+' | ticks:'+(d.tickCount||0)+dailyStr;
+  }
   const pc=d.totalPnL>=0?'up':'dn',tot=d.winCount+d.lossCount;
   // Show real portfolio in live mode, paper in demo
   const balLabel=d.isLive&&d.liveBalance?'Portfolio (Live)':'Balance'+(d.isLive?' (Live)':' (Paper)');
@@ -189,7 +193,7 @@ async function refresh(){
   document.getElementById('open-count').textContent=d.openTrades.length;
   const ob=document.getElementById('otb');
   if(!d.openTrades.length)ob.innerHTML='<tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr>';
-  else ob.innerHTML=d.openTrades.map(t=>`<tr><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}</span></td><td style="font-family:var(--mono)">$${(t.usdAmount||0).toFixed(2)}</td><td style="font-family:var(--mono)">${t.leverage||1}x</td><td>$${t.entryPrice.toFixed(2)}</td><td>$${t.currentPrice.toFixed(2)}</td><td class="${t.unrealizedPnl>=0?'up':'dn'}">${t.unrealizedPnl>=0?'+':''}$${t.unrealizedPnl.toFixed(2)}</td><td>${t.slPct||'—'}</td><td><button class="btn br" style="padding:2px 6px;font-size:8px" onclick="closeTr('${t.id}')">✕</button></td></tr>`).join('');
+  else ob.innerHTML=d.openTrades.map(t=>`<tr><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}</span></td><td style="font-family:var(--mono)" title="Total position value (notional)">$${(t.usdAmount||0).toFixed(2)}</td><td style="font-family:var(--mono);color:var(--am)" title="Your actual money locked as margin">$${(t.margin||t.usdAmount||0).toFixed(2)}</td><td style="font-family:var(--mono)">${t.leverage||1}x</td><td>$${t.entryPrice.toFixed(4)}</td><td>$${(t.currentPrice||t.entryPrice).toFixed(4)}</td><td class="${t.unrealizedPnl>=0?'up':'dn'}">${t.unrealizedPnl>=0?'+':''}$${(t.unrealizedPnl||0).toFixed(2)}</td><td>${t.slPct||'—'}</td><td><button class="btn br" style="padding:2px 6px;font-size:8px" onclick="closeTr('${t.id}')">✕</button></td></tr>`).join('');
   const hb=document.getElementById('htb');
   if(!d.recentHistory.length)hb.innerHTML='<tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr>';
   else hb.innerHTML=d.recentHistory.map(t=>`<tr><td>${new Date(t.closeTime).toLocaleString()}</td><td style="font-weight:600">${t.symbol.replace('-USDT','')}</td><td><span class="tag tag-${t.side}">${t.side}</span></td><td style="font-family:var(--mono)">$${(t.usdAmount||0).toFixed(2)}</td><td style="font-family:var(--mono)">${t.leverage||1}x</td><td>$${t.entryPrice.toFixed(2)}</td><td>$${t.exitPrice.toFixed(2)}</td><td class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td>${(t.reason||'').replace('_',' ')}${t.isLive?' (LIVE)':''}</td></tr>`).join('');
@@ -206,6 +210,7 @@ async function refresh(){
     document.getElementById('sdd').value=d.settings.maxDrawdownPct||15;
     document.getElementById('ssl').value=d.settings.slATR||1.5;
     document.getElementById('stp').value=d.settings.tpATR||3;
+    document.getElementById('sdaily').value=d.settings.dailyTargetPct||1.5;
     document.getElementById('strail').value=d.settings.trailingStop?'true':'false';
     document.getElementById('slev').value=d.settings.leverage||5;
     document.getElementById('smax').value=d.settings.maxOpenTrades||10;
@@ -316,7 +321,7 @@ async function getAI(){const key=document.getElementById('aikey').value.trim(),s
   if(d.error){box.innerHTML=`<div class="ai-box" style="color:var(--re)">${d.error}</div>`;return}box.innerHTML=`<div class="ai-box">${d.advice}</div>`}
 
 // Settings
-async function saveSet(){const s={mode:document.getElementById('smode').value,tradingType:document.getElementById('stype').value,smallBalanceMode:document.getElementById('ssmall').value,requiredAgents:+document.getElementById('sreq').value,riskPct:+document.getElementById('srisk').value,maxDrawdownPct:+document.getElementById('sdd').value,slATR:+document.getElementById('ssl').value,tpATR:+document.getElementById('stp').value,trailingStop:document.getElementById('strail').value==='true',leverage:+document.getElementById('slev').value,maxOpenTrades:+document.getElementById('smax').value,intervalMs:+document.getElementById('sint').value};if(s.mode==='live'&&!confirm('⚠ LIVE MODE = REAL MONEY!'))return;await api('/api/bot/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});alert('Saved!');refresh()}
+async function saveSet(){const s={mode:document.getElementById('smode').value,tradingType:document.getElementById('stype').value,smallBalanceMode:document.getElementById('ssmall').value,requiredAgents:+document.getElementById('sreq').value,riskPct:+document.getElementById('srisk').value,maxDrawdownPct:+document.getElementById('sdd').value,slATR:+document.getElementById('ssl').value,tpATR:+document.getElementById('stp').value,dailyTargetPct:+document.getElementById('sdaily').value,trailingStop:document.getElementById('strail').value==='true',leverage:+document.getElementById('slev').value,maxOpenTrades:+document.getElementById('smax').value,intervalMs:+document.getElementById('sint').value};if(s.mode==='live'&&!confirm('⚠ LIVE MODE = REAL MONEY!'))return;await api('/api/bot/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});alert('Saved!');refresh()}
 async function resetPaper(){if(!confirm('Reset paper balance to $10,000?'))return;await api('/api/bot/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resetPaper:true})});refresh()}
 async function resetDD(){if(!confirm('Reset drawdown baseline to current balance?\n\nUse this if DD is stuck at high % preventing trades.'))return;await api('/api/bot/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resetDrawdown:true})});alert('Drawdown reset!');refresh()}
 
