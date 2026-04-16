@@ -652,18 +652,25 @@ async function tick(){
         // KuCoin minimums
         const minSize=bot.tradingType==='spot'?1:5;
 
-        // Determine if we should use aggressive small balance sizing
         const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&bal<100);
 
         if(bot.tradingType==='spot'){
-          posUSD=Math.min(bal*0.9,posUSD);
+          if(useSmall){
+            posUSD=bal*0.9; // Use 90% of balance for spot trades in small balance mode
+          }else{
+            posUSD=Math.min(bal*0.9,posUSD);
+          }
           autoLev=1;
         }else{
-          const maxPosByMargin=bal*0.8*bot.leverage;
-          posUSD=Math.min(posUSD,maxPosByMargin);
+          // Futures
           if(useSmall){
-            posUSD=Math.min(bal*0.5*bot.leverage,posUSD);
+            // OVERRIDE: use 50% of balance × max leverage for position size
+            posUSD=bal*0.5*bot.leverage;
             autoLev=bot.leverage;
+          }else{
+            // Normal mode: cap by available margin
+            const maxPosByMargin=bal*0.8*bot.leverage;
+            posUSD=Math.min(posUSD,maxPosByMargin);
           }
         }
 
@@ -674,7 +681,7 @@ async function tick(){
         }
 
         if(posUSD<minSize){
-          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (balance:$${bal.toFixed(2)} lev:${autoLev}x smallMode:${bot.smallBalanceMode})`);
+          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (balance:$${bal.toFixed(2)} lev:${autoLev}x smallMode:${bot.smallBalanceMode} useSmall:${useSmall})`);
           continue;
         }
 
