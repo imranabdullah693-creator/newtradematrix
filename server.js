@@ -460,9 +460,9 @@ function councilVote(a,requiredAgree=4){
 
   // SIMPLIFIED GATES:
   // Gate 1: Weighted score threshold (lower = more trades)
-  const weightThreshold=Math.max(5,Math.floor(requiredAgree*1.5)); // e.g., 4 agents = need 8 pts
+  const weightThreshold=Math.max(8,requiredAgree*2); // e.g., 4 agents = need 8 pts
   // Gate 2: At least 1 Tier 1 agent must agree (anti-manipulation)
-  const t1Required=1;
+  const t1Required=2;
 
   let decision='hold',conf=0,agreeing=0;
 
@@ -505,7 +505,9 @@ const bot={
   running:false,mode:'paper',tradingType:'combined',
   symbols:ALL_SYMBOLS,intervalMs:45000,intervalId:null,
   requiredAgents:4,
-  riskPct:2,maxDrawdownPct:15,slATR:1.5,tpATR:3.0,trailingStop:true,trailATR:1.0,maxOpenTrades:10,leverage:5,smallBalanceMode:'auto',
+  riskPct:2,maxDrawdownPct:15,slATR:1.0,tpATR:3.0,trailingStop:true,trailATR:1.0,maxOpenTrades:10,leverage:5,smallBalanceMode:'auto',
+  dailyTargetPct:1.5, // stop trading after 1.5% daily profit
+  dailyPnL:0,dailyDate:null, // reset each day
   paperUSD:10000,startBal:10000,peakBal:10000,
   openTrades:[],history:[],totalPnL:0,winCount:0,lossCount:0,
   lastAnalysis:{},lastCouncil:{},log:[],cooldown:{},credentials:null
@@ -521,7 +523,7 @@ function loadSettings(){
     if(s.slATR)bot.slATR=s.slATR;if(s.tpATR)bot.tpATR=s.tpATR;
     if(s.trailingStop!==undefined)bot.trailingStop=s.trailingStop;if(s.trailATR)bot.trailATR=s.trailATR;
     if(s.maxOpenTrades)bot.maxOpenTrades=s.maxOpenTrades;if(s.leverage)bot.leverage=s.leverage;
-    if(s.smallBalanceMode)bot.smallBalanceMode=s.smallBalanceMode;
+    if(s.smallBalanceMode)bot.smallBalanceMode=s.smallBalanceMode;if(s.dailyTargetPct!==undefined)bot.dailyTargetPct=Math.max(0.5,Math.min(10,+s.dailyTargetPct));if(s.dailyTargetPct)bot.dailyTargetPct=s.dailyTargetPct;
     if(s.credentials)bot.credentials=s.credentials;
     console.log('✅ Settings loaded: mode='+bot.mode+' type='+bot.tradingType+' agents='+bot.requiredAgents+' creds='+(bot.credentials?'yes':'no'));
   }else{console.log('No settings file found, using defaults')}}catch(e){console.log('Settings load err:',e.message)}
@@ -534,7 +536,7 @@ function loadSettings(){
   }else{console.log('No state file found')}}catch(e){console.log('State load err:',e.message)}
 }
 function saveSettings(){
-  try{const data=JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,credentials:bot.credentials});
+  try{const data=JSON.stringify({mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents,riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,dailyTargetPct:bot.dailyTargetPct,credentials:bot.credentials});
   fs.writeFileSync(SETTINGS_FILE,data);console.log('Settings saved: mode='+bot.mode)}catch(e){console.log('Save err:',e.message)}
 }
 function saveState(){
@@ -595,6 +597,12 @@ async function closeTrade(t,price,reason){
   t.pnlPct=((t.exitPrice-t.entryPrice)/t.entryPrice*100*dir*(t.type==='futures'?t.leverage:1));
   if(!t.isLive)bot.paperUSD+=t.margin+t.pnl;
   bot.totalPnL+=t.pnl;t.pnl>0?bot.winCount++:bot.lossCount++;
+
+  // Track daily PnL
+  const today=new Date().toISOString().slice(0,10);
+  if(bot.dailyDate!==today){bot.dailyPnL=0;bot.dailyDate=today} // reset at midnight
+  bot.dailyPnL+=t.pnl;
+
   bot.openTrades=bot.openTrades.filter(x=>x.id!==t.id);bot.history.push(t);if(bot.history.length>500)bot.history.shift();
   botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(4)} | size:$${(t.usdAmount||0).toFixed(2)} | lev:${t.leverage||1}x | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
 }
@@ -860,8 +868,18 @@ async function tick(){
         const coin=sym.replace('-USDT','');
         if(dd>=bot.maxDrawdownPct){botLog(`${coin} SKIP: drawdown ${dd.toFixed(1)}% >= max ${bot.maxDrawdownPct}%`);continue}
 
-        // Limits — reduced cooldown to 5 min
-        if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000){continue} // cooldown — don't spam log
+        // ═══ DAILY PROFIT TARGET — stop trading when target hit ═══
+        const today=new Date().toISOString().slice(0,10);
+        if(bot.dailyDate!==today){bot.dailyPnL=0;bot.dailyDate=today} // reset at midnight
+        const dailyPctGain=(bot.dailyPnL/Math.max(bal,1))*100;
+        if(dailyPctGain>=bot.dailyTargetPct){
+          // Only log once per batch, not per coin
+          if(sym===batch[0])botLog(`🎯 Daily target reached: +${dailyPctGain.toFixed(2)}% (target: ${bot.dailyTargetPct}%). Trading paused until tomorrow.`);
+          continue;
+        }
+
+        // Limits
+        if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000){continue}
         if(bot.openTrades.length>=bot.maxOpenTrades){botLog(`${coin} SKIP: max open trades ${bot.openTrades.length}/${bot.maxOpenTrades}`);continue}
         if(bot.openTrades.filter(t=>t.symbol===sym).length>=2){botLog(`${coin} SKIP: already 2 open trades for this coin`);continue}
 
@@ -875,12 +893,42 @@ async function tick(){
         }else if(council.blockReason){
           botLog(`${coin} ${council.blockReason}`);
         }else if(Math.max(council.buyScore||0,council.sellScore||0)>=4){
-          // Log when there's a notable signal building
           botLog(`${coin} ${council.buyCount}b(${council.buyScore||0}pts)/${council.sellCount}s(${council.sellScore||0}pts) T1:${council.buyT1||0}b/${council.sellT1||0}s — need ${council.weightThreshold||8}pts`);
         }
 
         if(council.decision==='hold')continue;
-        if(council.confidence<40){botLog(`${coin} ${council.decision} conf too low: ${council.confidence}%`);continue}
+        if(council.confidence<70){botLog(`${coin} ${council.decision} conf too low: ${council.confidence}%`);continue}
+
+        // ═══ TP PROBABILITY CHECK — only trade if TP is more likely than SL ═══
+        const slDist=atr*bot.slATR;
+        const tpDist=atr*bot.tpATR;
+        const htf=a.htf||{};
+        const htfAligned=(council.decision==='buy'&&htf.bias&&htf.bias.includes('bullish'))||
+                         (council.decision==='sell'&&htf.bias&&htf.bias.includes('bearish'));
+        const htfStrong=htf.bias&&htf.bias.includes('strong');
+
+        // TP probability scoring: higher = better chance of hitting TP before SL
+        let tpProb=50; // start neutral
+        if(htfAligned)tpProb+=15;           // higher timeframe agrees with direction
+        if(htfStrong)tpProb+=10;            // 4H AND 1H both agree strongly
+        if(council.confidence>=85)tpProb+=10;// very high agent agreement
+        if(council.confidence>=75)tpProb+=5;
+        if(tpDist/slDist>=3)tpProb+=5;     // good risk:reward ratio
+        if(tpDist/slDist<2)tpProb-=10;      // bad risk:reward
+        if(a.btc){                           // BTC alignment
+          const btcAgrees=(council.decision==='buy'&&a.btc.condition.includes('bullish'))||
+                          (council.decision==='sell'&&a.btc.condition.includes('bearish'));
+          if(btcAgrees)tpProb+=10;
+          if(!btcAgrees&&!a.btc.condition.includes('neutral'))tpProb-=15;
+        }
+
+        // Need at least 65% estimated TP probability to enter
+        if(tpProb<65){
+          botLog(`${coin} SKIP: TP probability ${tpProb}% too low (need 65%). HTF:${htf.bias||'?'} conf:${council.confidence}% R:R=${(tpDist/slDist).toFixed(1)}`);
+          continue;
+        }
+
+        botLog(`${coin} TP prob: ${tpProb}% | HTF aligned:${htfAligned} | BTC:${a.btc?a.btc.condition:'?'} | R:R=${(tpDist/slDist).toFixed(1)}`);
 
         // Auto-leverage: tighter SL = higher leverage for same risk
         const slDistPct=(atr*bot.slATR)/price*100;
@@ -890,23 +938,42 @@ async function tick(){
           autoLev=Math.min(autoLev,bot.leverage);
         }
 
-        // Position sizing
-        // Position sizing
-        const riskUSD=bal*(bot.riskPct/100);const slDist=atr*bot.slATR;
+        // Position sizing (slDist already calculated above for TP probability)
+        const riskUSD=bal*(bot.riskPct/100);
         let posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
 
         // KuCoin minimums
         const minSize=bot.tradingType==='spot'?1:5;
 
-        // Subtract margin already locked in open trades
-        const lockedMargin=bot.openTrades.reduce((s,t)=>s+(t.margin||t.usdAmount||0),0);
-        const availableBal=Math.max(0,bal-lockedMargin);
+        // Use the RIGHT balance for the trade type (spot vs futures are separate accounts on KuCoin)
+        let effectiveBal=bal;
+        if(bot.mode==='live'&&liveBalanceCache){
+          if(bot.tradingType==='spot'){
+            effectiveBal=liveBalanceCache.spotUSD||bal;
+          }else{
+            effectiveBal=liveBalanceCache.futuresUSD||bal;
+          }
+        }
 
-        // Divide available balance across remaining trade slots
+        // Subtract margin already locked in open trades (of same type)
+        const lockedMargin=bot.openTrades.filter(t=>(bot.tradingType==='spot')?t.type==='spot':t.type!=='spot').reduce((s,t)=>s+(t.margin||t.usdAmount||0),0);
+        const availableBal=Math.max(0,effectiveBal-lockedMargin);
+
+        // GUARD: if available balance too low to trade meaningfully, stop trying
+        const minNeededForAnyTrade=bot.tradingType==='spot'?minSize*1.1:minSize*1.5; // spot minimum vs futures margin
+        if(availableBal<minNeededForAnyTrade){
+          botLog(`${coin} SKIP: ${bot.tradingType} available $${availableBal.toFixed(2)} too low for any trade (need $${minNeededForAnyTrade.toFixed(2)}+)`);
+          continue;
+        }
+
+        // Hard cap: no single trade can exceed 40% of the effective account balance
+        const hardCapMargin=effectiveBal*0.4;
+
+        // Divide across remaining slots
         const remainingSlots=Math.max(1,bot.maxOpenTrades-bot.openTrades.length);
-        const perTradeBudget=availableBal/remainingSlots;
+        const perTradeBudget=Math.min(availableBal/remainingSlots,hardCapMargin);
 
-        const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&bal<100);
+        const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&effectiveBal<100);
 
         if(bot.tradingType==='spot'){
           if(useSmall){
@@ -916,9 +983,8 @@ async function tick(){
           }
           autoLev=1;
         }else{
-          // Futures: KuCoin needs margin + fees + liquidation buffer
-          // Real usable margin is ~60% of perTradeBudget (leaves 40% for fees/buffer/slippage)
-          const realMargin=perTradeBudget*0.6;
+          // Futures: KuCoin requires margin + fees + liquidation buffer (~40% extra)
+          const realMargin=perTradeBudget*0.5; // Conservative 50% to cover fees + buffers
           if(useSmall){
             posUSD=realMargin*bot.leverage;
             autoLev=bot.leverage;
@@ -927,16 +993,16 @@ async function tick(){
           }
         }
 
-        // Final margin check: need 40% buffer on top of theoretical margin for futures
+        // Final check with realistic margin needed
         const theoreticalMargin=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
-        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*1.4; // 40% buffer for futures fees+buffer
+        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*1.5; // 50% buffer for futures
         if(realNeed>availableBal){
-          botLog(`${coin} SKIP: real need $${realNeed.toFixed(2)} (margin $${theoreticalMargin.toFixed(2)} +40% buffer) > available $${availableBal.toFixed(2)}`);
+          botLog(`${coin} SKIP: need $${realNeed.toFixed(2)} but only $${availableBal.toFixed(2)} available in ${bot.tradingType}`);
           continue;
         }
 
         if(posUSD<minSize){
-          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (available:$${availableBal.toFixed(2)} slots left:${remainingSlots} per-trade:$${perTradeBudget.toFixed(2)})`);
+          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize}`);
           continue;
         }
 
@@ -1099,7 +1165,7 @@ async function backtest(sym,reqAgents=4,periods=500){
     if(bal>peak)peak=bal;const dd=((peak-bal)/peak)*100;if(dd>maxDD)maxDD=dd;
     if(open)continue;
     const council=councilVote(a,reqAgents);
-    if(council.decision==='hold'||council.confidence<40)continue;
+    if(council.decision==='hold'||council.confidence<70)continue;
     const rUSD=bal*0.02,slD=atr*1.5,cost=Math.min(rUSD/(slD/price),bal*0.25);if(cost<10)continue;
     const qty=cost/price;
     bal-=cost;open={side:council.decision,symbol:sym,entry:price,qty,cost,sl:council.decision==='buy'?price-slD:price+slD,tp:council.decision==='buy'?price+atr*3:price-atr*3,conf:council.confidence,agreeing:council.agreeing};
@@ -1121,7 +1187,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
   const bal=getCurBal(),dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0,tot=bot.winCount+bot.lossCount;
   const liveBal=bot.mode==='live'?liveBalanceCache:{};
   res.json({running:bot.running,mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,leverage:bot.leverage,
-    tickCount,newsAge:newsCache.updated?Math.round((Date.now()-newsCache.updated)/1000):null,newsArticles:(newsCache.articles||[]).length,
+    tickCount,dailyPnL:bot.dailyPnL,dailyPctGain:bal>0?((bot.dailyPnL/bal)*100):0,dailyTargetPct:bot.dailyTargetPct,dailyTargetHit:bal>0&&((bot.dailyPnL/bal)*100)>=bot.dailyTargetPct,newsAge:newsCache.updated?Math.round((Date.now()-newsCache.updated)/1000):null,newsArticles:(newsCache.articles||[]).length,
     balance:Math.round(bal*100)/100,startBal:bot.startBal,totalPnL:Math.round(bot.totalPnL*100)/100,
     totalPnLPct:bot.startBal>0?Math.round((bal-bot.startBal)/bot.startBal*10000)/100:0,
     // Real portfolio data (live mode only)
@@ -1132,7 +1198,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;const upnl=Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100;return{...t,currentPrice:cp,unrealizedPnl:upnl,slPct:t.sl?((Math.abs(t.entryPrice-t.sl)/t.entryPrice)*100).toFixed(2)+'%':'—'}}),
     recentHistory:bot.history.slice(-30).reverse(),council:bot.lastCouncil,log:bot.log.slice(-50).reverse(),
     hasCredentials:!!bot.credentials,sentiment:sentimentCache,newsOverall:newsCache.overall,newsSentiment:newsCache.sentiment,recentNews:(newsCache.articles||[]).slice(0,15),
-    settings:{riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents}
+    settings:{riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,dailyTargetPct:bot.dailyTargetPct,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents}
   });
 });
 
@@ -1150,7 +1216,7 @@ app.post('/api/bot/settings',mw,async(req,res)=>{
   if(s.leverage!==undefined)bot.leverage=Math.max(1,Math.min(20,+s.leverage));
   if(s.intervalMs!==undefined){bot.intervalMs=Math.max(30000,Math.min(300000,+s.intervalMs));if(bot.running&&bot.intervalId){clearInterval(bot.intervalId);bot.intervalId=setInterval(tick,bot.intervalMs)}}
   if(s.requiredAgents!==undefined)bot.requiredAgents=Math.max(2,Math.min(9,+s.requiredAgents));
-  if(s.smallBalanceMode)bot.smallBalanceMode=s.smallBalanceMode;
+  if(s.smallBalanceMode)bot.smallBalanceMode=s.smallBalanceMode;if(s.dailyTargetPct!==undefined)bot.dailyTargetPct=Math.max(0.5,Math.min(10,+s.dailyTargetPct));if(s.dailyTargetPct)bot.dailyTargetPct=s.dailyTargetPct;
   if(s.resetPaper){bot.paperUSD=10000;bot.startBal=10000;bot.peakBal=10000;bot.openTrades=[];bot.history=[];bot.totalPnL=0;bot.winCount=0;bot.lossCount=0;botLog('Paper reset')}
   if(s.resetDrawdown){
     // Re-initialize live baseline to current balance
@@ -1251,6 +1317,8 @@ app.get('/debug',(req,res)=>{
   h+='requiredAgents: '+bot.requiredAgents+' of '+Object.keys(AGENTS).length+'\n';
   h+='credentials: '+(bot.credentials?'<span class="ok">yes</span>':'<span class="bad">no</span>')+'\n';
   h+='openTrades: '+bot.openTrades.length+' | historyCount: '+bot.history.length+'\n';
+  const dBal=getCurBal();const dPct=dBal>0?((bot.dailyPnL/dBal)*100):0;
+  h+='dailyPnL: $'+bot.dailyPnL.toFixed(2)+' ('+dPct.toFixed(2)+'%) | target: '+bot.dailyTargetPct+'% '+(dPct>=bot.dailyTargetPct?'<span class="ok">🎯 TARGET HIT — paused</span>':'<span class="warn">trading</span>')+'\n';
   h+='</pre>';
   h+='<h2>NEWS CACHE</h2><pre>';
   h+='articles: '+(newsCache.articles?.length||0)+'\n';
