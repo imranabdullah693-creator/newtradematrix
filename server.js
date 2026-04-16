@@ -512,19 +512,35 @@ function paperSell(sym,price,usd,sl,tp,conf,council,autoLev=1){
   const t={id:crypto.randomUUID().slice(0,8),symbol:sym,side:'sell',type:'futures',leverage:lev,entryPrice:price,qty,usdAmount:usd,margin,sl,tp,confidence:conf,agreeing:council.agreeing,trailingSl:bot.trailingStop?sl:null,lowSince:price,openTime:new Date().toISOString(),status:'open'};
   bot.openTrades.push(t);botLog(`SHORT ${sym} @$${price.toFixed(2)} | size:$${usd.toFixed(2)} | lev:${lev}x | SL:${slPct}% ($${sl.toFixed(2)}) | TP:$${tp.toFixed(2)} | ${council.agreeing}/${council.total} agents | conf:${conf}%`);return t;
 }
-function closeTrade(t,price,reason){
+async function closeTrade(t,price,reason){
   t.status='closed';t.exitPrice=price;t.closeTime=new Date().toISOString();t.reason=reason;
+
+  // If this is a LIVE futures trade, close the position on exchange
+  if(t.isLive&&t.type==='futures'){
+    try{
+      await futuresClosePosition(t.symbol,t.side,t.qty);
+      botLog(`Closed futures position on KuCoin: ${t.symbol}`);
+    }catch(e){botLog(`Failed to close futures position: ${e.message}`)}
+  }else if(t.isLive&&t.type==='spot'&&t.side==='buy'){
+    // For spot, need to sell the position
+    try{
+      await liveOrder('sell',t.symbol,t.usdAmount,price);
+      botLog(`Sold spot position on KuCoin: ${t.symbol}`);
+    }catch(e){botLog(`Failed to sell spot: ${e.message}`)}
+  }
+
   const dir=t.side==='buy'?1:-1;const raw=(price-t.entryPrice)*t.qty*dir;
-  t.pnl=t.type==='futures'?raw*t.leverage:raw;t.pnlPct=((t.exitPrice-t.entryPrice)/t.entryPrice*100*dir*(t.type==='futures'?t.leverage:1));
-  bot.paperUSD+=t.margin+t.pnl;bot.totalPnL+=t.pnl;t.pnl>0?bot.winCount++:bot.lossCount++;
+  t.pnl=t.type==='futures'?raw*t.leverage:raw;
+  t.pnlPct=((t.exitPrice-t.entryPrice)/t.entryPrice*100*dir*(t.type==='futures'?t.leverage:1));
+  if(!t.isLive)bot.paperUSD+=t.margin+t.pnl;
+  bot.totalPnL+=t.pnl;t.pnl>0?bot.winCount++:bot.lossCount++;
   bot.openTrades=bot.openTrades.filter(x=>x.id!==t.id);bot.history.push(t);if(bot.history.length>500)bot.history.shift();
-  botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(2)} | size:$${(t.usdAmount||0).toFixed(2)} | lev:${t.leverage||1}x | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
+  botLog(`CLOSE ${t.side} ${t.symbol} @$${price.toFixed(4)} | size:$${(t.usdAmount||0).toFixed(2)} | lev:${t.leverage||1}x | PnL:${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%) | ${reason}`);saveState();
 }
 
-// Symbol info cache (increments, minimums from KuCoin)
+// Symbol info cache (increments, minimums from KuCoin) — SPOT
 let symbolInfoCache={data:{},updated:0};
 async function getSymbolInfo(sym){
-  // Refresh every 1 hour
   if(Date.now()-symbolInfoCache.updated<3600000&&symbolInfoCache.data[sym])return symbolInfoCache.data[sym];
   try{
     const r=await fetch('https://api.kucoin.com/api/v2/symbols');
@@ -532,40 +548,61 @@ async function getSymbolInfo(sym){
     if(d.code==='200000'&&d.data){
       const info={};
       for(const s of d.data){
-        info[s.symbol]={
-          baseIncrement:+s.baseIncrement,  // e.g., 0.00001 for BTC
-          quoteIncrement:+s.quoteIncrement,
-          baseMinSize:+s.baseMinSize,       // minimum coins
-          quoteMinSize:+s.quoteMinSize,     // minimum $
-          priceIncrement:+s.priceIncrement
-        };
+        info[s.symbol]={baseIncrement:+s.baseIncrement,quoteIncrement:+s.quoteIncrement,baseMinSize:+s.baseMinSize,quoteMinSize:+s.quoteMinSize,priceIncrement:+s.priceIncrement};
       }
       symbolInfoCache={data:info,updated:Date.now()};
-      console.log('Symbol info cached:',Object.keys(info).length,'symbols');
+      console.log('Spot symbol info cached:',Object.keys(info).length,'symbols');
     }
-  }catch(e){console.log('Symbol info err:',e.message)}
+  }catch(e){console.log('Spot symbol info err:',e.message)}
   return symbolInfoCache.data[sym]||{baseIncrement:0.001,baseMinSize:0.001,quoteMinSize:1};
 }
 
-// Round quantity to symbol's increment
+// FUTURES symbol info cache (different endpoint)
+let futuresInfoCache={data:{},symbolMap:{},updated:0};
+async function getFuturesInfo(spotSym){
+  if(Date.now()-futuresInfoCache.updated<3600000&&Object.keys(futuresInfoCache.data).length)return futuresInfoCache.data[futuresInfoCache.symbolMap[spotSym]];
+  try{
+    const r=await fetch('https://api-futures.kucoin.com/api/v1/contracts/active');
+    const d=await safeJSON(r);
+    if(d.code==='200000'&&d.data){
+      const info={};const symbolMap={};
+      for(const c of d.data){
+        // Build map: spot symbol "BTC-USDT" → futures contract "XBTUSDTM"
+        const base=c.baseCurrency==='XBT'?'BTC':c.baseCurrency;
+        const quote=c.quoteCurrency;
+        const spotSymbol=base+'-'+quote;
+        symbolMap[spotSymbol]=c.symbol;
+        info[c.symbol]={
+          contract:c.symbol,
+          multiplier:+c.multiplier,    // value of 1 contract in base currency
+          lotSize:+c.lotSize,          // minimum contracts per order
+          tickSize:+c.tickSize,        // price increment
+          maxLeverage:+c.maxLeverage,
+          isInverse:c.isInverse,       // inverse vs linear
+          markPrice:+c.markPrice
+        };
+      }
+      futuresInfoCache={data:info,symbolMap,updated:Date.now()};
+      console.log('Futures contracts cached:',Object.keys(info).length,'contracts');
+    }
+  }catch(e){console.log('Futures info err:',e.message)}
+  const contract=futuresInfoCache.symbolMap[spotSym];
+  return contract?futuresInfoCache.data[contract]:null;
+}
+
 function roundToIncrement(qty,increment){
   if(!increment||increment===0)return qty;
-  const decimals=Math.max(0,-Math.floor(Math.log10(increment)));
   return Math.floor(qty/increment)*increment;
 }
 
+// SPOT market order
 async function liveOrder(side,sym,usdAmount,price){
   if(!bot.credentials)throw new Error('No credentials');
-  // Get KuCoin's rules for this symbol
   const info=await getSymbolInfo(sym);
-  // Calculate quantity from USD amount
   let qty=usdAmount/price;
-  // Round to valid increment
   qty=roundToIncrement(qty,info.baseIncrement);
-  // Check minimums
   if(qty<info.baseMinSize)throw new Error(`qty ${qty} < min ${info.baseMinSize}`);
   if(qty*price<info.quoteMinSize)throw new Error(`value $${(qty*price).toFixed(2)} < min $${info.quoteMinSize}`);
-
   const qtyStr=qty.toFixed(Math.max(0,-Math.floor(Math.log10(info.baseIncrement||0.001))));
   const{apiKey,apiSecret,passphrase}=bot.credentials;
   const ep='/api/v1/orders',body={clientOid:crypto.randomUUID(),side,symbol:sym,type:'market',size:qtyStr};
@@ -573,6 +610,59 @@ async function liveOrder(side,sym,usdAmount,price){
   const d=await safeJSON(r);
   if(d.code!=='200000')throw new Error(d.msg||'Order failed');
   return{...d.data,qty,price};
+}
+
+// FUTURES market order (with leverage, supports both long and short)
+async function futuresOrder(side,spotSym,usdAmount,price,leverage){
+  if(!bot.credentials)throw new Error('No credentials');
+  const info=await getFuturesInfo(spotSym);
+  if(!info)throw new Error(`No futures contract for ${spotSym}`);
+
+  // Calculate contracts. Linear contracts: size = (usdAmount × leverage) / (price × multiplier)
+  const contracts=Math.floor((usdAmount*leverage)/(price*info.multiplier));
+  if(contracts<info.lotSize)throw new Error(`contracts ${contracts} < min lot ${info.lotSize}`);
+
+  const{apiKey,apiSecret,passphrase}=bot.credentials;
+  const ep='/api/v1/orders';
+  const body={
+    clientOid:crypto.randomUUID(),
+    side,  // 'buy' or 'sell'
+    symbol:info.contract,
+    type:'market',
+    size:contracts,
+    leverage:String(leverage)
+  };
+  const r=await fetch('https://api-futures.kucoin.com'+ep,{
+    method:'POST',
+    headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),
+    body:JSON.stringify(body)
+  });
+  const d=await safeJSON(r);
+  if(d.code!=='200000')throw new Error('Futures: '+(d.msg||'Order failed'));
+  return{orderId:d.data.orderId,qty:contracts*info.multiplier,price,contracts};
+}
+
+// Close futures position (opposite side)
+async function futuresClosePosition(spotSym,side,size){
+  if(!bot.credentials)throw new Error('No credentials');
+  const info=await getFuturesInfo(spotSym);
+  if(!info)throw new Error(`No futures contract for ${spotSym}`);
+  const oppositeSide=side==='buy'?'sell':'buy';
+  const contracts=Math.floor(size/info.multiplier);
+  const{apiKey,apiSecret,passphrase}=bot.credentials;
+  const ep='/api/v1/orders';
+  const body={
+    clientOid:crypto.randomUUID(),
+    side:oppositeSide,
+    symbol:info.contract,
+    type:'market',
+    size:contracts,
+    reduceOnly:true  // only reduce position, don't open opposite
+  };
+  const r=await fetch('https://api-futures.kucoin.com'+ep,{method:'POST',headers:kcH('POST',ep,body,apiKey,apiSecret,passphrase),body:JSON.stringify(body)});
+  const d=await safeJSON(r);
+  if(d.code!=='200000')throw new Error('Futures close: '+(d.msg||'Failed'));
+  return d.data;
 }
 
 // ═══ MULTI-TIMEFRAME ANALYSIS ═══
@@ -740,23 +830,53 @@ async function tick(){
           if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,'spot',autoLev);
           else if(council.decision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council,autoLev);
         }else{
-          // LIVE MODE — only BUY on spot (shorts need futures account which most users don't have)
-          if(council.decision==='sell'){
-            botLog(`${coin} SKIP: cannot short on spot (would need KuCoin Futures account). Only BUY orders execute in live mode.`);
-            continue;
-          }
+          // LIVE MODE
+          const useFutures=bot.tradingType==='futures'||bot.tradingType==='combined';
           try{
-            const orderResult=await liveOrder(council.decision,sym,posUSD,price);
-            const orderId=orderResult.orderId;
-            let fillPrice=orderResult.price||price,fillQty=orderResult.qty||(posUSD/price),fillFee=0;
-            try{
-              await new Promise(r=>setTimeout(r,2000));
-              const fillData=await fetchOrderFill(orderId);
-              if(fillData&&fillData.filled){fillPrice=fillData.price;fillQty=fillData.qty;fillFee=fillData.fee}
-            }catch{}
-            const realUSD=fillPrice*fillQty;
-            bot.openTrades.push({id:crypto.randomUUID().slice(0,8),orderId,symbol:sym,side:council.decision,type:'spot',leverage:1,entryPrice:fillPrice,qty:fillQty,usdAmount:realUSD,margin:realUSD,sl,tp,confidence:council.confidence,agreeing:council.agreeing,fee:fillFee,openTime:new Date().toISOString(),status:'open',highSince:fillPrice,trailingSl:bot.trailingStop?sl:null,isLive:true});
-            botLog(`LIVE BUY ${sym} @$${fillPrice.toFixed(4)} | size:$${realUSD.toFixed(2)} | qty:${fillQty.toFixed(6)} | SL:${slPct}% | ${council.agreeing}/${council.total} agents`);
+            let orderResult,fillPrice=price,fillQty,realUSD,lev=autoLev;
+
+            if(useFutures){
+              // FUTURES — supports both long and short with leverage
+              lev=bot.leverage;  // use configured leverage
+              orderResult=await futuresOrder(council.decision,sym,posUSD,price,lev);
+              fillQty=orderResult.qty;
+              realUSD=posUSD;  // notional position value
+              botLog(`LIVE FUTURES ${council.decision.toUpperCase()} ${sym} @$${fillPrice.toFixed(4)} | notional:$${realUSD.toFixed(2)} | lev:${lev}x | contracts:${orderResult.contracts} | margin:$${(realUSD/lev).toFixed(2)}`);
+            }else{
+              // SPOT — only long
+              if(council.decision==='sell'){
+                botLog(`${coin} SKIP: cannot short on spot. Switch to Futures/Combined mode.`);
+                continue;
+              }
+              orderResult=await liveOrder(council.decision,sym,posUSD,price);
+              fillQty=orderResult.qty||(posUSD/price);
+              realUSD=fillPrice*fillQty;
+              lev=1;
+              botLog(`LIVE SPOT BUY ${sym} @$${fillPrice.toFixed(4)} | size:$${realUSD.toFixed(2)} | qty:${fillQty.toFixed(6)}`);
+            }
+
+            bot.openTrades.push({
+              id:crypto.randomUUID().slice(0,8),
+              orderId:orderResult.orderId,
+              symbol:sym,
+              side:council.decision,
+              type:useFutures?'futures':'spot',
+              leverage:lev,
+              entryPrice:fillPrice,
+              qty:fillQty,
+              contracts:orderResult.contracts||null,
+              usdAmount:realUSD,
+              margin:useFutures?realUSD/lev:realUSD,
+              sl,tp,
+              confidence:council.confidence,
+              agreeing:council.agreeing,
+              openTime:new Date().toISOString(),
+              status:'open',
+              highSince:fillPrice,
+              lowSince:fillPrice,
+              trailingSl:bot.trailingStop?sl:null,
+              isLive:true
+            });
             saveState();
           }catch(e){botLog(`ORDER ERR ${sym}: ${e.message}`)}
         }
@@ -785,21 +905,42 @@ async function fetchOrderFill(orderId){
 let liveBalanceCache={totalUSD:0,updated:0};
 async function fetchLiveBalance(){
   if(!bot.credentials)return 0;
-  if(Date.now()-liveBalanceCache.updated<15000)return liveBalanceCache.totalUSD; // cache 15s
+  if(Date.now()-liveBalanceCache.updated<15000)return liveBalanceCache.totalUSD;
   try{
     const{apiKey,apiSecret,passphrase}=bot.credentials;
-    const ep='/api/v1/accounts?type=trade';
-    const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
-    const d=await safeJSON(r);
-    if(d.code!=='200000')return liveBalanceCache.totalUSD;
+    let spotTotal=0,futuresTotal=0;
     const bals={};
-    for(const a of d.data){const v=parseFloat(a.available);if(v>0)bals[a.currency]=(bals[a.currency]||0)+v}
-    let total=0;
-    const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);
-    const pm={USDT:1,USDC:1};
-    if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;
-    for(const[c,a]of Object.entries(bals))total+=(pm[c]||0)*a;
-    liveBalanceCache={totalUSD:Math.round(total*100)/100,balances:bals,updated:Date.now()};
+
+    // Spot balance
+    try{
+      const ep='/api/v1/accounts?type=trade';
+      const r=await fetch('https://api.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+      const d=await safeJSON(r);
+      if(d.code==='200000'){
+        for(const a of d.data){const v=parseFloat(a.available);if(v>0)bals[a.currency]=(bals[a.currency]||0)+v}
+      }
+    }catch(e){console.log('Spot bal err:',e.message)}
+
+    // Price map
+    let pm={USDT:1,USDC:1};
+    try{
+      const pr=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const pd=await safeJSON(pr);
+      if(pd.code==='200000')for(const t of pd.data.ticker)if(t.symbol.endsWith('-USDT'))pm[t.symbol.replace('-USDT','')]=+t.last||0;
+    }catch{}
+    for(const[c,a]of Object.entries(bals))spotTotal+=(pm[c]||0)*a;
+
+    // Futures balance (separate API)
+    try{
+      const fep='/api/v1/account-overview?currency=USDT';
+      const fr=await fetch('https://api-futures.kucoin.com'+fep,{headers:kcH('GET',fep,null,apiKey,apiSecret,passphrase)});
+      const fd=await safeJSON(fr);
+      if(fd.code==='200000'&&fd.data){
+        futuresTotal=+fd.data.accountEquity||+fd.data.availableBalance||0;
+      }
+    }catch(e){console.log('Futures bal err:',e.message)}
+
+    const total=spotTotal+futuresTotal;
+    liveBalanceCache={totalUSD:Math.round(total*100)/100,spotUSD:Math.round(spotTotal*100)/100,futuresUSD:Math.round(futuresTotal*100)/100,balances:bals,updated:Date.now()};
     return total;
   }catch{return liveBalanceCache.totalUSD}
 }
