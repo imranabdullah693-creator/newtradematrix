@@ -155,7 +155,7 @@ async function refresh(){
   document.getElementById('sdot').className='sdot '+(d.running?'on':'off');document.getElementById('stxt').textContent=d.running?'On':'Off';
   const mb=document.getElementById('mbdg');mb.textContent=d.mode.toUpperCase();mb.className='mbdg '+(d.mode==='paper'?'paper':'live');
   document.getElementById('bstart').disabled=d.running;document.getElementById('bstop').disabled=!d.running;
-  if(d.sentiment)document.getElementById('sent-txt').textContent='F&G:'+d.sentiment.value;
+  if(d.sentiment)document.getElementById('sent-txt').textContent='F&G:'+d.sentiment.value+' | ticks:'+(d.tickCount||0)+' | news:'+(d.newsArticles||0)+(d.newsAge!==null?' ('+Math.round(d.newsAge/60)+'m ago)':'');
   const pc=d.totalPnL>=0?'up':'dn',tot=d.winCount+d.lossCount;
   // Show real portfolio in live mode, paper in demo
   const balLabel=d.isLive&&d.liveBalance?'Portfolio (Live)':'Balance'+(d.isLive?' (Live)':' (Paper)');
