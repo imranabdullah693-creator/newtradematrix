@@ -477,6 +477,10 @@ function saveState(){
 loadSettings();
 // Auto-save BOTH settings and state every 30s (was 60s)
 setInterval(()=>{saveSettings();saveState()},30000);
+// News refreshes independently of bot state - every 5 min
+setInterval(()=>{fetchNews().catch(e=>console.log('News refresh err:',e.message))},300000);
+// Also fetch on startup after 5 seconds
+setTimeout(()=>{fetchNews().catch(e=>console.log('Initial news err:',e.message));getSentiment().catch(e=>console.log('Initial sentiment err:',e.message))},5000);
 
 function botLog(m){const e={time:new Date().toISOString(),msg:m};bot.log.push(e);if(bot.log.length>500)bot.log.shift();console.log('[BOT]',m)}
 
@@ -563,11 +567,15 @@ async function multiTimeframeAnalysis(sym){
 }
 
 // ═══ BOT TICK ═══
-let tickIndex=0; // rotate through symbols to avoid rate limits
+let tickIndex=0;
+let tickCount=0;
 async function tick(){
+  tickCount++;
   try{
-    await fetchNews();
-    // Only scan 8 coins per tick to avoid KuCoin rate limits (30 coins / 8 = ~4 ticks to scan all)
+    // News is fetched separately now, but try to update it here too (non-blocking)
+    fetchNews().catch(()=>{});
+    getSentiment().catch(()=>{});
+
     const batchSize=5;
     const batch=[];
     for(let i=0;i<batchSize&&i<bot.symbols.length;i++){
@@ -752,6 +760,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
   const bal=getCurBal(),dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0,tot=bot.winCount+bot.lossCount;
   const liveBal=bot.mode==='live'?liveBalanceCache:{};
   res.json({running:bot.running,mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,leverage:bot.leverage,
+    tickCount,newsAge:newsCache.updated?Math.round((Date.now()-newsCache.updated)/1000):null,newsArticles:(newsCache.articles||[]).length,
     balance:Math.round(bal*100)/100,startBal:bot.startBal,totalPnL:Math.round(bot.totalPnL*100)/100,
     totalPnLPct:bot.startBal>0?Math.round((bal-bot.startBal)/bot.startBal*10000)/100:0,
     // Real portfolio data (live mode only)
