@@ -611,17 +611,17 @@ async function tick(){
         // Drawdown
         const bal=getCurBal();if(bal>bot.peakBal)bot.peakBal=bal;
         const dd=((bot.peakBal-bal)/bot.peakBal)*100;
-        if(dd>=bot.maxDrawdownPct)continue;
+        const coin=sym.replace('-USDT','');
+        if(dd>=bot.maxDrawdownPct){botLog(`${coin} SKIP: drawdown ${dd.toFixed(1)}% >= max ${bot.maxDrawdownPct}%`);continue}
 
         // Limits — reduced cooldown to 5 min
-        if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000)continue;
-        if(bot.openTrades.length>=bot.maxOpenTrades)continue;
-        if(bot.openTrades.filter(t=>t.symbol===sym).length>=2)continue;
+        if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000){continue} // cooldown — don't spam log
+        if(bot.openTrades.length>=bot.maxOpenTrades){botLog(`${coin} SKIP: max open trades ${bot.openTrades.length}/${bot.maxOpenTrades}`);continue}
+        if(bot.openTrades.filter(t=>t.symbol===sym).length>=2){botLog(`${coin} SKIP: already 2 open trades for this coin`);continue}
 
         // ═══ COUNCIL VOTE ═══
         const council=councilVote(a,bot.requiredAgents);
         bot.lastCouncil[sym]=council;
-        const coin=sym.replace('-USDT','');
 
         // Always log the result so user can see bot is working
         if(council.decision!=='hold'){
@@ -636,21 +636,36 @@ async function tick(){
         if(council.decision==='hold')continue;
         if(council.confidence<40){botLog(`${coin} ${council.decision} conf too low: ${council.confidence}%`);continue}
 
-        // Auto-leverage calculation: tighter SL = higher leverage for same risk
-        const slDistPct=(atr*bot.slATR)/price*100; // SL distance as % of price
+        // Auto-leverage: tighter SL = higher leverage for same risk
+        const slDistPct=(atr*bot.slATR)/price*100;
         let autoLev=1;
         if(bot.tradingType!=='spot'){
-          // Optimal leverage = target risk% / SL distance%
-          // e.g., if risk is 2% and SL is 0.5% away, use 4x leverage
           autoLev=Math.max(1,Math.min(bot.leverage,Math.round(bot.riskPct/slDistPct)));
-          // Cap at user's max leverage setting
           autoLev=Math.min(autoLev,bot.leverage);
         }
 
-        // Position sizing with auto-leverage
+        // Position sizing — for small balances, use fixed % of balance instead of risk-based
         const riskUSD=bal*(bot.riskPct/100);const slDist=atr*bot.slATR;
-        const posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
-        if(posUSD<10)continue;
+        let posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
+
+        // Minimum order size — KuCoin minimum is $1 for spot, $5 for futures
+        const minSize=bot.tradingType==='spot'?1:5;
+
+        // For small balances ($<100), use max position size (15% of balance) with max leverage
+        if(bal<100&&bot.tradingType!=='spot'){
+          // Small balance: use 20% of balance * max leverage = effective position
+          posUSD=bal*0.2*bot.leverage;
+          autoLev=bot.leverage;
+        }else if(bal<100){
+          // Small balance spot: use 20% of balance
+          posUSD=bal*0.2;
+        }
+
+        if(posUSD<minSize){
+          botLog(`${coin} SKIP: pos $${posUSD.toFixed(2)} < min $${minSize} (balance:$${bal.toFixed(2)} risk:${bot.riskPct}% lev:${autoLev}x)`);
+          continue;
+        }
+
         const sl=council.decision==='buy'?price-slDist:price+slDist;
         const tp=council.decision==='buy'?price+atr*bot.tpATR:price-atr*bot.tpATR;
         const slPct=((slDist/price)*100).toFixed(2);
