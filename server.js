@@ -959,10 +959,10 @@ async function tick(){
         const lockedMargin=bot.openTrades.filter(t=>(bot.tradingType==='spot')?t.type==='spot':t.type!=='spot').reduce((s,t)=>s+(t.margin||t.usdAmount||0),0);
         const availableBal=Math.max(0,effectiveBal-lockedMargin);
 
-        // GUARD: if available balance too low to trade meaningfully, stop trying
-        const minNeededForAnyTrade=bot.tradingType==='spot'?minSize*1.1:minSize*1.5; // spot minimum vs futures margin
+        // GUARD: if available balance too low to trade meaningfully
+        const minNeededForAnyTrade=bot.tradingType==='spot'?minSize*1.05:minSize*1.1; // just slightly above KuCoin min
         if(availableBal<minNeededForAnyTrade){
-          botLog(`${coin} SKIP: ${bot.tradingType} available $${availableBal.toFixed(2)} too low for any trade (need $${minNeededForAnyTrade.toFixed(2)}+)`);
+          botLog(`${coin} SKIP: available $${availableBal.toFixed(2)} < min $${minNeededForAnyTrade.toFixed(2)}`);
           continue;
         }
 
