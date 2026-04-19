@@ -870,13 +870,13 @@ async function tick(){
 
         // ═══ DAILY PROFIT TARGET — stop trading when target hit ═══
         const today=new Date().toISOString().slice(0,10);
-        if(bot.dailyDate!==today){bot.dailyPnL=0;bot.dailyDate=today} // reset at midnight
+        if(bot.dailyDate!==today){bot.dailyPnL=0;bot.dailyDate=today}
         const dailyPctGain=(bot.dailyPnL/Math.max(bal,1))*100;
-        if(dailyPctGain>=bot.dailyTargetPct){
-          // Only log once per batch, not per coin
-          if(sym===batch[0])botLog(`🎯 Daily target reached: +${dailyPctGain.toFixed(2)}% (target: ${bot.dailyTargetPct}%). Trading paused until tomorrow.`);
-          continue;
-        }
+        const dailyTargetHit=dailyPctGain>=bot.dailyTargetPct;
+
+        // After daily target: don't stop — just raise the bar significantly
+        const confThreshold=dailyTargetHit?85:70;
+        const tpProbThreshold=dailyTargetHit?85:65;
 
         // Limits
         if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000){continue}
@@ -889,7 +889,7 @@ async function tick(){
 
         // Always log the result so user can see bot is working
         if(council.decision!=='hold'){
-          botLog(`${coin} → ${council.decision.toUpperCase()} | ${council.buyCount}buy(${council.buyScore||0}pts)/${council.sellCount}sell(${council.sellScore||0}pts) | conf:${council.confidence}% | HTF:${council.htf||'?'}`);
+          botLog(`${coin} → ${council.decision.toUpperCase()} | ${council.buyCount}buy(${council.buyScore||0}pts)/${council.sellCount}sell(${council.sellScore||0}pts) | conf:${council.confidence}% | HTF:${council.htf||'?'}${dailyTargetHit?' 🎯':''}`);
         }else if(council.blockReason){
           botLog(`${coin} ${council.blockReason}`);
         }else if(Math.max(council.buyScore||0,council.sellScore||0)>=4){
@@ -897,7 +897,10 @@ async function tick(){
         }
 
         if(council.decision==='hold')continue;
-        if(council.confidence<70){botLog(`${coin} ${council.decision} conf too low: ${council.confidence}%`);continue}
+        if(council.confidence<confThreshold){
+          botLog(`${coin} ${council.decision} conf ${council.confidence}% < ${confThreshold}%${dailyTargetHit?' (raised after 🎯)':''}`);
+          continue;
+        }
 
         // ═══ TP PROBABILITY CHECK — only trade if TP is more likely than SL ═══
         const slDist=atr*bot.slATR;
@@ -907,28 +910,27 @@ async function tick(){
                          (council.decision==='sell'&&htf.bias&&htf.bias.includes('bearish'));
         const htfStrong=htf.bias&&htf.bias.includes('strong');
 
-        // TP probability scoring: higher = better chance of hitting TP before SL
-        let tpProb=50; // start neutral
-        if(htfAligned)tpProb+=15;           // higher timeframe agrees with direction
-        if(htfStrong)tpProb+=10;            // 4H AND 1H both agree strongly
-        if(council.confidence>=85)tpProb+=10;// very high agent agreement
+        // TP probability scoring
+        let tpProb=50;
+        if(htfAligned)tpProb+=15;
+        if(htfStrong)tpProb+=10;
+        if(council.confidence>=85)tpProb+=10;
         if(council.confidence>=75)tpProb+=5;
-        if(tpDist/slDist>=3)tpProb+=5;     // good risk:reward ratio
-        if(tpDist/slDist<2)tpProb-=10;      // bad risk:reward
-        if(a.btc){                           // BTC alignment
+        if(tpDist/slDist>=3)tpProb+=5;
+        if(tpDist/slDist<2)tpProb-=10;
+        if(a.btc){
           const btcAgrees=(council.decision==='buy'&&a.btc.condition.includes('bullish'))||
                           (council.decision==='sell'&&a.btc.condition.includes('bearish'));
           if(btcAgrees)tpProb+=10;
           if(!btcAgrees&&!a.btc.condition.includes('neutral'))tpProb-=15;
         }
 
-        // Need at least 65% estimated TP probability to enter
-        if(tpProb<65){
-          botLog(`${coin} SKIP: TP probability ${tpProb}% too low (need 65%). HTF:${htf.bias||'?'} conf:${council.confidence}% R:R=${(tpDist/slDist).toFixed(1)}`);
+        if(tpProb<tpProbThreshold){
+          botLog(`${coin} SKIP: TP prob ${tpProb}% < ${tpProbThreshold}%${dailyTargetHit?' (raised after 🎯)':''} | HTF:${htf.bias||'?'} R:R=${(tpDist/slDist).toFixed(1)}`);
           continue;
         }
 
-        botLog(`${coin} TP prob: ${tpProb}% | HTF aligned:${htfAligned} | BTC:${a.btc?a.btc.condition:'?'} | R:R=${(tpDist/slDist).toFixed(1)}`);
+        botLog(`${coin} ✓ TP prob: ${tpProb}% | conf:${council.confidence}% | HTF:${htf.bias||'?'} | BTC:${a.btc?a.btc.condition:'?'} | R:R=${(tpDist/slDist).toFixed(1)}${dailyTargetHit?' 🎯 BONUS TRADE':''}`);
 
         // Auto-leverage: tighter SL = higher leverage for same risk
         const slDistPct=(atr*bot.slATR)/price*100;
@@ -1318,7 +1320,7 @@ app.get('/debug',(req,res)=>{
   h+='credentials: '+(bot.credentials?'<span class="ok">yes</span>':'<span class="bad">no</span>')+'\n';
   h+='openTrades: '+bot.openTrades.length+' | historyCount: '+bot.history.length+'\n';
   const dBal=getCurBal();const dPct=dBal>0?((bot.dailyPnL/dBal)*100):0;
-  h+='dailyPnL: $'+bot.dailyPnL.toFixed(2)+' ('+dPct.toFixed(2)+'%) | target: '+bot.dailyTargetPct+'% '+(dPct>=bot.dailyTargetPct?'<span class="ok">🎯 TARGET HIT — paused</span>':'<span class="warn">trading</span>')+'\n';
+  h+='dailyPnL: $'+bot.dailyPnL.toFixed(2)+' ('+dPct.toFixed(2)+'%) | target: '+bot.dailyTargetPct+'% '+(dPct>=bot.dailyTargetPct?'<span class="ok">🎯 TARGET HIT — only 85%+ TP prob trades allowed</span>':'<span class="warn">trading (65%+ TP prob)</span>')+'\n';
   h+='</pre>';
   h+='<h2>NEWS CACHE</h2><pre>';
   h+='articles: '+(newsCache.articles?.length||0)+'\n';
