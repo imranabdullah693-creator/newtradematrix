@@ -945,7 +945,7 @@ async function tick(){
         let posUSD=Math.min(riskUSD/(slDist/price)*autoLev,bal*0.15);
 
         // KuCoin minimums
-        const minSize=bot.tradingType==='spot'?1:5;
+        const minSize=bot.tradingType==='spot'?1:1;
 
         // Use the RIGHT balance for the trade type (spot vs futures are separate accounts on KuCoin)
         let effectiveBal=bal;
@@ -970,12 +970,13 @@ async function tick(){
 
         // Hard cap: no single trade can exceed 40% of the effective account balance
         const hardCapMargin=effectiveBal*0.4;
+        const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&effectiveBal<100);
 
         // Divide across remaining slots
-        const remainingSlots=Math.max(1,bot.maxOpenTrades-bot.openTrades.length);
+        // For small balances: cap slots at 3 so each trade gets a meaningful budget
+        let remainingSlots=Math.max(1,bot.maxOpenTrades-bot.openTrades.length);
+        if(useSmall)remainingSlots=Math.min(remainingSlots,3);
         const perTradeBudget=Math.min(availableBal/remainingSlots,hardCapMargin);
-
-        const useSmall=bot.smallBalanceMode==='on'||(bot.smallBalanceMode==='auto'&&effectiveBal<100);
 
         if(bot.tradingType==='spot'){
           if(useSmall){
@@ -985,8 +986,9 @@ async function tick(){
           }
           autoLev=1;
         }else{
-          // Futures: KuCoin requires margin + fees + liquidation buffer (~40% extra)
-          const realMargin=perTradeBudget*0.5; // Conservative 50% to cover fees + buffers
+          // Futures: use 80% of budget as margin for small balances, 50% for normal
+          const marginPct=useSmall?0.8:0.5;
+          const realMargin=perTradeBudget*marginPct;
           if(useSmall){
             posUSD=realMargin*bot.leverage;
             autoLev=bot.leverage;
@@ -997,9 +999,9 @@ async function tick(){
 
         // Final check with realistic margin needed
         const theoreticalMargin=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
-        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*1.5; // 50% buffer for futures
+        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*(useSmall?1.15:1.5);
         if(realNeed>availableBal){
-          botLog(`${coin} SKIP: need $${realNeed.toFixed(2)} but only $${availableBal.toFixed(2)} available in ${bot.tradingType}`);
+          botLog(`${coin} SKIP: need $${realNeed.toFixed(2)} but only $${availableBal.toFixed(2)} available`);
           continue;
         }
 
