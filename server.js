@@ -39,7 +39,7 @@ let sentimentCache={value:50,label:'Neutral',updated:0};
 let newsCache={articles:[],sentiment:{},overall:{score:0,bias:'neutral'},updated:0};
 const BULL=['surge','rally','bullish','breakout','soar','pump','ath','gain','rise','jump','adoption','approval','etf','institutional','upgrade','partnership','launch','record','optimistic','growth','recovery','accumulate'];
 const BEAR=['crash','dump','bearish','plunge','drop','fall','hack','ban','fraud','scam','regulation','crackdown','lawsuit','fine','risk','warning','decline','panic','correction','collapse','bankrupt','shutdown'];
-const COINS_MAP={BTC:'bitcoin',ETH:'ethereum',SOL:'solana',XRP:'ripple',ADA:'cardano',DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',AVAX:'avalanche',MATIC:'polygon',SHIB:'shiba',UNI:'uniswap',ATOM:'cosmos',LTC:'litecoin',FIL:'filecoin',NEAR:'near',APT:'aptos',ARB:'arbitrum',OP:'optimism',SUI:'sui',SEI:'sei',INJ:'injective',FET:'fetch',RENDER:'render',PEPE:'pepe',WIF:'dogwifhat',BONK:'bonk',FLOKI:'floki',BNB:'binance',TIA:'celestia'};
+const COINS_MAP={BTC:'bitcoin',ETH:'ethereum',SOL:'solana',XRP:'ripple',ADA:'cardano',DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',AVAX:'avalanche',BNB:'binance',SHIB:'shiba',UNI:'uniswap',ATOM:'cosmos',LTC:'litecoin',FIL:'filecoin',NEAR:'near',APT:'aptos',ARB:'arbitrum',OP:'optimism',SUI:'sui',SEI:'sei',INJ:'injective',FET:'fetch',RENDER:'render',PEPE:'pepe',WIF:'dogwifhat',BONK:'bonk',FLOKI:'floki',TIA:'celestia',AAVE:'aave',XLM:'stellar',HBAR:'hedera',VET:'vechain',FTM:'fantom',GRT:'graph',STX:'stacks',IMX:'immutable',JASMY:'jasmy',EOS:'eos',ALGO:'algorand',SAND:'sandbox',MANA:'decentraland',CRV:'curve',ONDO:'ondo',JUP:'jupiter',PENDLE:'pendle',KAS:'kaspa',RUNE:'thorchain',GALA:'gala',DYDX:'dydx'};
 function scoreText(t){if(!t)return 0;const lo=t.toLowerCase();let s=0;for(const w of BULL)if(lo.includes(w))s++;for(const w of BEAR)if(lo.includes(w))s--;return s}
 
 async function getSentiment(){
@@ -498,7 +498,7 @@ function councilVote(a,requiredAgree=4){
 }
 
 // ═══ BOT STATE ═══
-const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','ADA-USDT','DOGE-USDT','LINK-USDT','AVAX-USDT','DOT-USDT','MATIC-USDT','SHIB-USDT','UNI-USDT','ATOM-USDT','LTC-USDT','FIL-USDT','NEAR-USDT','APT-USDT','ARB-USDT','OP-USDT','SUI-USDT','SEI-USDT','INJ-USDT','FET-USDT','RENDER-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT','TIA-USDT','BNB-USDT'];
+const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','ADA-USDT','DOGE-USDT','LINK-USDT','AVAX-USDT','DOT-USDT','BNB-USDT','SHIB-USDT','UNI-USDT','ATOM-USDT','LTC-USDT','FIL-USDT','NEAR-USDT','APT-USDT','ARB-USDT','OP-USDT','SUI-USDT','SEI-USDT','INJ-USDT','FET-USDT','RENDER-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT','TIA-USDT','AAVE-USDT','XLM-USDT','HBAR-USDT','VET-USDT','FTM-USDT','GRT-USDT','STX-USDT','IMX-USDT','JASMY-USDT','EOS-USDT','ALGO-USDT','SAND-USDT','MANA-USDT','CRV-USDT','ONDO-USDT','JUP-USDT','PENDLE-USDT','KAS-USDT','RUNE-USDT','GALA-USDT','DYDX-USDT'];
 const SETTINGS_FILE=path.join(__dirname,'.bot-settings.json');
 const STATE_FILE=path.join(__dirname,'.bot-state.json');
 const bot={
@@ -1202,6 +1202,15 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;const upnl=Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100;return{...t,currentPrice:cp,unrealizedPnl:upnl,slPct:t.sl?((Math.abs(t.entryPrice-t.sl)/t.entryPrice)*100).toFixed(2)+'%':'—'}}),
     recentHistory:bot.history.slice(-30).reverse(),council:bot.lastCouncil,log:bot.log.slice(-50).reverse(),
     hasCredentials:!!bot.credentials,sentiment:sentimentCache,newsOverall:newsCache.overall,newsSentiment:newsCache.sentiment,recentNews:(newsCache.articles||[]).slice(0,15),
+    // Top opportunities — ranked by council score
+    opportunities:Object.entries(bot.lastCouncil).map(([sym,c])=>({symbol:sym.replace('-USDT',''),decision:c.decision,confidence:c.confidence,buyScore:c.buyScore,sellScore:c.sellScore,score:Math.max(c.buyScore||0,c.sellScore||0),htf:c.htf||'?'})).sort((a,b)=>b.score-a.score).slice(0,10),
+    // Market regime
+    regime:{
+      btc:btcAnalysisCache?{condition:btcAnalysisCache.condition,rsi:btcAnalysisCache.rsi,change1h:btcAnalysisCache.priceChange1h,change4h:btcAnalysisCache.priceChange4h}:null,
+      sentiment:sentimentCache,
+      newsOverall:newsCache.overall||{},
+      volatility:btcAnalysisCache&&btcAnalysisCache.trendStrength?btcAnalysisCache.trendStrength:'unknown'
+    },
     settings:{riskPct:bot.riskPct,maxDrawdownPct:bot.maxDrawdownPct,slATR:bot.slATR,tpATR:bot.tpATR,trailingStop:bot.trailingStop,trailATR:bot.trailATR,maxOpenTrades:bot.maxOpenTrades,leverage:bot.leverage,smallBalanceMode:bot.smallBalanceMode,dailyTargetPct:bot.dailyTargetPct,intervalMs:bot.intervalMs,requiredAgents:bot.requiredAgents}
   });
 });
