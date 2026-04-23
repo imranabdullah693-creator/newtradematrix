@@ -549,7 +549,7 @@ setInterval(()=>{saveSettings();saveState()},30000);
 // News refreshes independently of bot state - every 5 min
 setInterval(()=>{fetchNews().catch(e=>console.log('News refresh err:',e.message))},300000);
 // Also fetch on startup after 5 seconds
-setTimeout(()=>{fetchNews().catch(e=>console.log('Initial news err:',e.message));getSentiment().catch(e=>console.log('Initial sentiment err:',e.message))},5000);
+setTimeout(()=>{fetchNews().catch(e=>console.log('Initial news err:',e.message));getSentiment().catch(e=>console.log('Initial sentiment err:',e.message));syncKuCoinPositions().catch(e=>console.log('Initial sync err:',e.message))},5000);
 
 function botLog(m){const e={time:new Date().toISOString(),msg:m};bot.log.push(e);if(bot.log.length>500)bot.log.shift();console.log('[BOT]',m)}
 
@@ -720,21 +720,25 @@ async function futuresOrder(side,spotSym,usdAmount,price,leverage){
 
   // Retry with smaller sizes on insufficient balance
   let attempts=0;
-  while(result.data.code!=='200000'&&result.data.msg&&result.data.msg.toLowerCase().includes('insufficient')&&attempts<4){
+  while(result.data.code!=='200000'&&result.data.msg&&result.data.msg.toLowerCase().includes('insufficient')&&attempts<3){
     attempts++;
-    // Parse required amount if KuCoin tells us
     const match=result.data.msg.match(/(\d+\.?\d*)\s*is required/i);
     if(match){
       const required=+match[1];
-      // If KuCoin says "28.90 required" and we had $25 margin, that's 15% short. Reduce position size accordingly.
-      const currentMargin=(contracts*price*info.multiplier)/leverage;
-      const ratio=currentMargin/required;
-      contracts=Math.floor(contracts*ratio*0.9); // 10% extra safety
+      // KuCoin says it needs $X. Reduce contracts so margin fits within what we can afford.
+      const newContracts=Math.floor(contracts*(contracts*price*info.multiplier/leverage)/required*0.8);
+      if(newContracts>=info.lotSize&&newContracts<contracts){
+        contracts=newContracts;
+      }else{
+        contracts=Math.floor(contracts*0.5); // halve it
+      }
     }else{
-      contracts=Math.floor(contracts*0.7); // blind reduce to 70%
+      contracts=Math.floor(contracts*0.5);
     }
-    if(contracts<info.lotSize){throw new Error('Insufficient balance even at minimum lot size');}
-    console.log(`Retry ${attempts}: reducing to ${contracts} contracts`);
+    if(contracts<info.lotSize){
+      throw new Error(`Balance too low. KuCoin needs $${match?match[1]:'?'} but position is at minimum lot.`);
+    }
+    botLog(`Retry ${attempts}: reducing to ${contracts} contracts (${(contracts*price*info.multiplier).toFixed(2)} notional)`);
     result=await attemptOrder(contracts,marginMode);
   }
 
@@ -817,6 +821,8 @@ async function tick(){
     fetchNews().catch(()=>{});
     getSentiment().catch(()=>{});
     if(bot.mode==='live'&&bot.credentials){try{await fetchLiveBalance()}catch(e){botLog('Balance fetch err: '+e.message)}}
+    // Sync real positions from KuCoin (fixes margin display, recovers after redeploy)
+    if(bot.mode==='live')await syncKuCoinPositions().catch(()=>{});
 
     // ALWAYS fetch BTC first so altcoin agents know BTC's state
     try{
@@ -987,22 +993,22 @@ async function tick(){
           }
           autoLev=1;
         }else{
-          // Futures: use 80% of budget as margin for small balances, 50% for normal
-          const marginPct=useSmall?0.8:0.5;
-          const realMargin=perTradeBudget*marginPct;
+          // Futures: KuCoin needs margin × 1.5 for fees/maintenance
+          // So max usable margin = budget / 1.5
+          const maxMargin=perTradeBudget/1.5;
           if(useSmall){
-            posUSD=realMargin*bot.leverage;
+            posUSD=maxMargin*bot.leverage;
             autoLev=bot.leverage;
           }else{
-            posUSD=Math.min(realMargin*bot.leverage,posUSD);
+            posUSD=Math.min(maxMargin*bot.leverage,posUSD);
           }
         }
 
         // Final check with realistic margin needed
         const theoreticalMargin=bot.tradingType==='spot'?posUSD:posUSD/autoLev;
-        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*(useSmall?1.15:1.5);
+        const realNeed=bot.tradingType==='spot'?theoreticalMargin:theoreticalMargin*1.5; // KuCoin needs ~50% extra for fees+maintenance
         if(realNeed>availableBal){
-          botLog(`${coin} SKIP: need $${realNeed.toFixed(2)} but only $${availableBal.toFixed(2)} available`);
+          botLog(`${coin} SKIP: KuCoin needs ~$${realNeed.toFixed(2)} (margin $${theoreticalMargin.toFixed(2)} +50% buffer) but only $${availableBal.toFixed(2)} free`);
           continue;
         }
 
@@ -1093,6 +1099,81 @@ async function fetchOrderFill(orderId){
 
 // Fetch real wallet balance for live mode
 let liveBalanceCache={totalUSD:0,updated:0};
+
+// ═══ SYNC REAL POSITIONS FROM KUCOIN ═══
+// Fixes: wrong margin display, position recovery after redeploy
+let lastPositionSync=0;
+async function syncKuCoinPositions(){
+  if(!bot.credentials||bot.mode!=='live')return;
+  if(Date.now()-lastPositionSync<30000)return; // max once per 30s
+  lastPositionSync=Date.now();
+  try{
+    const{apiKey,apiSecret,passphrase}=bot.credentials;
+    const ep='/api/v1/positions';
+    const r=await fetch('https://api-futures.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+    const d=await safeJSON(r);
+    if(d.code!=='200000'||!d.data)return;
+
+    const realPositions=d.data.filter(p=>p.currentQty&&p.currentQty!==0);
+
+    // Build contract→spot symbol map
+    await getFuturesInfo('BTC-USDT');
+    const contractToSpot={};
+    for(const[spot,contract] of Object.entries(futuresInfoCache.symbolMap)){
+      contractToSpot[contract]=spot;
+    }
+
+    // Update existing bot trades with REAL KuCoin data
+    for(const pos of realPositions){
+      const spotSym=contractToSpot[pos.symbol];
+      if(!spotSym)continue;
+      const side=pos.currentQty>0?'buy':'sell';
+      const existing=bot.openTrades.find(t=>t.symbol===spotSym&&t.isLive&&t.type==='futures'&&t.side===side);
+      const realMargin=Math.abs(+pos.posCost||0);
+      const realLev=+pos.realLeverage||+pos.leverage||1;
+      const entryPrice=+pos.avgEntryPrice||0;
+      const uPnl=+pos.unrealisedPnl||0;
+      const multiplier=futuresInfoCache.data[pos.symbol]?.multiplier||1;
+      const qty=Math.abs(pos.currentQty)*multiplier;
+      const notional=entryPrice*qty;
+
+      if(existing){
+        existing.margin=realMargin;
+        existing.usdAmount=notional;
+        existing.entryPrice=entryPrice;
+        existing.leverage=realLev;
+        existing.qty=qty;
+        existing.realUPnL=uPnl;
+      }else{
+        // Position on KuCoin but not in bot — recovered after redeploy
+        bot.openTrades.push({
+          id:crypto.randomUUID().slice(0,8),symbol:spotSym,side,type:'futures',
+          leverage:realLev,entryPrice,qty,contracts:Math.abs(pos.currentQty),
+          usdAmount:notional,margin:realMargin,realUPnL:uPnl,
+          sl:null,tp:null,confidence:0,agreeing:0,
+          openTime:new Date().toISOString(),status:'open',
+          highSince:entryPrice,lowSince:entryPrice,trailingSl:null,
+          isLive:true,recovered:true
+        });
+        botLog(`RECOVERED: ${side.toUpperCase()} ${spotSym} @$${entryPrice.toFixed(4)} | margin:$${realMargin.toFixed(2)} | lev:${realLev.toFixed(0)}x`);
+      }
+    }
+
+    // Remove bot trades that were closed on KuCoin directly
+    const realSymSides=new Set(realPositions.map(p=>{
+      const sp=contractToSpot[p.symbol]||'';
+      return sp+'|'+(p.currentQty>0?'buy':'sell');
+    }));
+    const before=bot.openTrades.length;
+    bot.openTrades=bot.openTrades.filter(t=>{
+      if(!t.isLive||t.type!=='futures')return true;
+      return realSymSides.has(t.symbol+'|'+t.side);
+    });
+    if(bot.openTrades.length<before)botLog(`Removed ${before-bot.openTrades.length} stale trade(s) — closed on KuCoin directly`);
+
+    saveState();
+  }catch(e){console.log('Position sync err:',e.message)}
+}
 async function fetchLiveBalance(){
   if(!bot.credentials)return 0;
   if(Date.now()-liveBalanceCache.updated<15000)return liveBalanceCache.totalUSD;
@@ -1189,6 +1270,7 @@ app.post('/api/bot/stop',mw,(req,res)=>{bot.running=false;if(bot.intervalId){cle
 app.get('/api/bot/status',mw,async(req,res)=>{
   // In live mode, fetch real balance
   if(bot.mode==='live'&&bot.credentials){try{await fetchLiveBalance()}catch{}}
+  if(bot.mode==='live')await syncKuCoinPositions().catch(()=>{});
   const bal=getCurBal(),dd=bot.peakBal>0?((bot.peakBal-bal)/bot.peakBal)*100:0,tot=bot.winCount+bot.lossCount;
   const liveBal=bot.mode==='live'?liveBalanceCache:{};
   res.json({running:bot.running,mode:bot.mode,tradingType:bot.tradingType,symbols:bot.symbols,leverage:bot.leverage,
@@ -1200,7 +1282,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     isLive:bot.mode==='live',
     winCount:bot.winCount,lossCount:bot.lossCount,winRate:tot>0?Math.round(bot.winCount/tot*10000)/100:0,
     drawdown:Math.round(dd*100)/100,requiredAgents:bot.requiredAgents,totalAgents:Object.keys(AGENTS).length,
-    openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;const upnl=Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100;return{...t,currentPrice:cp,unrealizedPnl:upnl,slPct:t.sl?((Math.abs(t.entryPrice-t.sl)/t.entryPrice)*100).toFixed(2)+'%':'—'}}),
+    openTrades:bot.openTrades.map(t=>{const cp=bot.lastAnalysis[t.symbol]?.price||t.entryPrice;const dir=t.side==='buy'?1:-1;const calcUpnl=Math.round((cp-t.entryPrice)*t.qty*dir*(t.type==='futures'?t.leverage:1)*100)/100;const upnl=t.realUPnL!==undefined?Math.round(t.realUPnL*100)/100:calcUpnl;return{...t,currentPrice:cp,unrealizedPnl:upnl,slPct:t.sl?((Math.abs(t.entryPrice-t.sl)/t.entryPrice)*100).toFixed(2)+'%':'—'}}),
     recentHistory:bot.history.slice(-30).reverse(),council:bot.lastCouncil,log:bot.log.slice(-50).reverse(),
     hasCredentials:!!bot.credentials,sentiment:sentimentCache,newsOverall:newsCache.overall,newsSentiment:newsCache.sentiment,recentNews:(newsCache.articles||[]).slice(0,15),
     // Top opportunities — ranked by council score
