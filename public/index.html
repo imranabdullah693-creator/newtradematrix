@@ -159,8 +159,15 @@ async function api(ep,opts={}){opts.headers=opts.headers||{};if(token)opts.heade
 
 // Auth
 function togAuth(e){e.preventDefault();isLogin=!isLogin;document.getElementById('auth-btn').textContent=isLogin?'Login':'Create Account';document.getElementById('auth-sub').textContent=isLogin?'Welcome back':'Create your account';document.getElementById('atxt').textContent=isLogin?'New user?':'Have an account?';document.getElementById('atog').textContent=isLogin?' Create account':' Login'}
-async function doAuth(){const em=document.getElementById('auth-email').value.trim(),pw=document.getElementById('auth-pw').value;const d=await api('/api/auth/'+(isLogin?'login':'register'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,password:pw})});if(d.error||!d.token){document.getElementById('auth-err').textContent=d.error||'Failed';return}token=d.token;localStorage.setItem('tm_token',token);document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}
-window.onload=()=>{token=localStorage.getItem('tm_token')||'';if(token){document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}}
+async function doAuth(){const em=document.getElementById('auth-email').value.trim(),pw=document.getElementById('auth-pw').value;const d=await api('/api/auth/'+(isLogin?'login':'setup'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,password:pw})});if(d.error||!d.token){document.getElementById('auth-err').textContent=d.error||'Failed';return}token=d.token;localStorage.setItem('tm_token',token);document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}
+window.onload=async()=>{token=localStorage.getItem('tm_token')||'';if(token){
+  const check=await api('/api/auth/check');
+  if(check.needsSetup||!check.authenticated){
+    token='';localStorage.removeItem('tm_token');
+    if(check.needsSetup){document.getElementById('auth-sub').textContent='Create your account';isLogin=false;document.getElementById('auth-btn').textContent='Create Account'}
+    else{document.getElementById('auth-sub').textContent='Session expired. Please login';isLogin=true;document.getElementById('auth-btn').textContent='Login';document.getElementById('atxt').textContent='New user?';document.getElementById('atog').textContent=' Create account'}
+  }else{document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}
+}}
 
 // Nav
 document.querySelectorAll('.ni[data-p]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));el.classList.add('on');const pg=document.getElementById('pg-'+el.dataset.p);if(pg)pg.classList.add('act');document.getElementById('sb').classList.remove('open');if(el.dataset.p==='chart')loadChart()});
