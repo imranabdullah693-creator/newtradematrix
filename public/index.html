@@ -72,7 +72,7 @@
 .opp-score{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600}
 @media(max-width:768px){.app.show{grid-template-columns:1fr;grid-template-rows:44px auto 1fr}.sb{display:none;position:fixed;top:44px;left:0;right:0;z-index:99;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--b1);padding:4px 8px;background:var(--bg1)}.sb.open{display:flex}.ns{display:none}.ni{padding:6px 10px;white-space:nowrap;border-left:none;border-bottom:2px solid transparent;font-size:10px}.ni.on{border-left:none;border-bottom-color:var(--gr)}.hmenu{display:block}.sr{grid-template-columns:repeat(2,1fr)}.mn{padding:10px}.hdr{padding:0 8px}.hr{gap:6px;overflow:hidden}.hr>span{font-size:8px!important;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cd{padding:10px}.tbl{font-size:9px}.tbl td,.tbl th{padding:4px 5px}.opp-row{flex-wrap:wrap}.regime-item{flex-wrap:wrap;gap:4px}#tv-chart{height:50vh!important;min-height:300px!important}.log{max-height:150px;font-size:8px}}
 </style></head><body>
-<div class="auth-wrap" id="auth-wrap"><div class="auth-box"><div style="font-size:28px;margin-bottom:8px">◆</div><h1>TradeMatrix Pro</h1><p id="auth-sub">Create your account</p><input id="auth-email" type="email" placeholder="Email"/><input id="auth-pw" type="password" placeholder="Password (4+ chars)"/><button class="abtn" id="auth-btn" onclick="doAuth()">Create Account</button><div class="auth-err" id="auth-err"></div><div style="margin-top:14px;font-size:10px;color:var(--t3)"><span id="atxt">Have an account?</span><a href="#" id="atog" onclick="togAuth(event)" style="color:var(--bl);text-decoration:none"> Login</a></div></div></div>
+<div class="auth-wrap" id="auth-wrap"><div class="auth-box"><div style="font-size:28px;margin-bottom:8px">◆</div><h1>TradeMatrix Pro</h1><p id="auth-sub">Create your account</p><input id="auth-email" type="email" placeholder="Email"/><input id="auth-pw" type="password" placeholder="Password (4+ chars)"/><button class="abtn" id="auth-btn" onclick="doAuth()">Create Account</button><div class="auth-err" id="auth-err"></div><div style="margin-top:14px;font-size:10px;color:var(--t3)"><span id="atxt">Have an account?</span><a href="#" id="atog" onclick="togAuth(event)" style="color:var(--bl);text-decoration:none"> Login</a> · <a href="#" onclick="resetAuth(event)" style="color:var(--am);text-decoration:none">Reset Account</a></div></div></div>
 
 <div class="app" id="app">
   <div class="hdr"><div class="logo-r"><span class="hmenu" id="hmenu" onclick="document.getElementById('sb').classList.toggle('open')">☰</span><div class="gem">◆</div><span class="lname">TradeMatrix</span><span class="lver">v4</span></div><div class="hr"><span style="font-size:9px;color:var(--t2)" id="sent-txt">F&G: --</span><div id="mbdg" class="mbdg paper">...</div><div style="display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9px;color:var(--t2)"><div id="sdot" class="sdot off"></div><span id="stxt">Off</span></div></div></div>
@@ -158,16 +158,34 @@ const BASE=location.origin;
 async function api(ep,opts={}){opts.headers=opts.headers||{};if(token)opts.headers.Authorization='Bearer '+token;try{const r=await fetch(BASE+ep,opts);return r.json()}catch(e){return{error:e.message}}}
 
 // Auth
-function togAuth(e){e.preventDefault();isLogin=!isLogin;document.getElementById('auth-btn').textContent=isLogin?'Login':'Create Account';document.getElementById('auth-sub').textContent=isLogin?'Welcome back':'Create your account';document.getElementById('atxt').textContent=isLogin?'New user?':'Have an account?';document.getElementById('atog').textContent=isLogin?' Create account':' Login'}
-async function doAuth(){const em=document.getElementById('auth-email').value.trim(),pw=document.getElementById('auth-pw').value;const d=await api('/api/auth/'+(isLogin?'login':'setup'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,password:pw})});if(d.error||!d.token){document.getElementById('auth-err').textContent=d.error||'Failed';return}token=d.token;localStorage.setItem('tm_token',token);document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}
-window.onload=async()=>{token=localStorage.getItem('tm_token')||'';if(token){
-  const check=await api('/api/auth/check');
-  if(check.needsSetup||!check.authenticated){
-    token='';localStorage.removeItem('tm_token');
-    if(check.needsSetup){document.getElementById('auth-sub').textContent='Create your account';isLogin=false;document.getElementById('auth-btn').textContent='Create Account'}
-    else{document.getElementById('auth-sub').textContent='Session expired. Please login';isLogin=true;document.getElementById('auth-btn').textContent='Login';document.getElementById('atxt').textContent='New user?';document.getElementById('atog').textContent=' Create account'}
-  }else{document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}
-}}
+function togAuth(e){e.preventDefault();isLogin=!isLogin;document.getElementById('auth-btn').textContent=isLogin?'Login':'Create Account';document.getElementById('auth-sub').textContent=isLogin?'Welcome back':'Create your account';document.getElementById('atxt').textContent=isLogin?'New user?':'Have an account?';document.getElementById('atog').textContent=isLogin?' Create account':' Login';document.getElementById('auth-err').textContent=''}
+async function resetAuth(e){e.preventDefault();const em=document.getElementById('auth-email').value.trim();if(!em){document.getElementById('auth-err').textContent='Enter your email first, then click Reset';return}if(!confirm('Reset account for '+em+'? You will need to create a new one.'))return;const d=await api('/api/auth/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em})});document.getElementById('auth-err').textContent=d.error||d.message||'Reset done. Now create a new account.';if(d.success){isLogin=false;document.getElementById('auth-btn').textContent='Create Account';document.getElementById('auth-sub').textContent='Create your account'}}
+async function doAuth(){const em=document.getElementById('auth-email').value.trim(),pw=document.getElementById('auth-pw').value;if(!em||!pw){document.getElementById('auth-err').textContent='Enter email and password';return}document.getElementById('auth-err').textContent='';const ep=isLogin?'login':'setup';const d=await api('/api/auth/'+ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,password:pw})});if(d.needsSetup){document.getElementById('auth-err').textContent='No account exists. Click Create Account.';isLogin=false;document.getElementById('auth-btn').textContent='Create Account';return}if(d.error||!d.token){document.getElementById('auth-err').textContent=d.error||'Failed — try Reset Account';return}token=d.token;localStorage.setItem('tm_token',token);document.getElementById('auth-wrap').style.display='none';document.getElementById('app').classList.add('show');init()}
+window.onload=async()=>{
+  token=localStorage.getItem('tm_token')||'';
+  try{
+    const check=await api('/api/auth/check');
+    if(check.needsSetup){
+      // No account exists — show create
+      isLogin=false;
+      document.getElementById('auth-btn').textContent='Create Account';
+      document.getElementById('auth-sub').textContent='Create your account';
+    }else if(token&&check.authenticated){
+      // Valid session — go to dashboard
+      document.getElementById('auth-wrap').style.display='none';
+      document.getElementById('app').classList.add('show');
+      init();return;
+    }else{
+      // Account exists but token invalid — show login
+      token='';localStorage.removeItem('tm_token');
+      isLogin=true;
+      document.getElementById('auth-btn').textContent='Login';
+      document.getElementById('auth-sub').textContent='Welcome back — please login';
+      document.getElementById('atxt').textContent='New user?';
+      document.getElementById('atog').textContent=' Reset & create new';
+    }
+  }catch(e){console.log('Auth check err:',e)}
+}
 
 // Nav
 document.querySelectorAll('.ni[data-p]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));el.classList.add('on');const pg=document.getElementById('pg-'+el.dataset.p);if(pg)pg.classList.add('act');document.getElementById('sb').classList.remove('open');if(el.dataset.p==='chart')loadChart()});
@@ -210,7 +228,7 @@ async function refresh(){
     +'<td>$'+fmtP(t.currentPrice||t.entryPrice)+'</td>'
     +'<td class="'+(upnl>=0?'up':'dn')+'">'+(upnl>=0?'+':'')+fmtUSD(upnl)+'</td>'
     +'<td>'+(t.slPct||'—')+'</td>'
-    +'<td><button class="btn br" style="padding:2px 6px;font-size:8px" onclick="closeTr(''+t.id+'')">✕</button></td></tr>';
+    +'<td><button class="btn br" style="padding:2px 6px;font-size:8px" onclick="closeTr(\''+t.id+'\')">✕</button></td></tr>';
   }).join('');
 
   // History — smart price formatting
