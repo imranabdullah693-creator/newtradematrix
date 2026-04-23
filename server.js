@@ -1129,33 +1129,38 @@ async function syncKuCoinPositions(){
       if(!spotSym)continue;
       const side=pos.currentQty>0?'buy':'sell';
       const existing=bot.openTrades.find(t=>t.symbol===spotSym&&t.isLive&&t.type==='futures'&&t.side===side);
-      const realMargin=Math.abs(+pos.posCost||0);
       const realLev=+pos.realLeverage||+pos.leverage||1;
       const entryPrice=+pos.avgEntryPrice||0;
       const uPnl=+pos.unrealisedPnl||0;
       const multiplier=futuresInfoCache.data[pos.symbol]?.multiplier||1;
       const qty=Math.abs(pos.currentQty)*multiplier;
-      const notional=entryPrice*qty;
+
+      // KuCoin fields:
+      // posCost = full position value (notional)
+      // posInit = initial margin deposited
+      // posMargin = total margin (init + maintenance buffer)
+      // maintMarginReq = maintenance margin requirement
+      const notional=Math.abs(+pos.posCost||0)||entryPrice*qty;
+      const margin=Math.abs(+pos.posInit||+pos.posMargin||0)||(notional/realLev);
 
       if(existing){
-        existing.margin=realMargin;
+        existing.margin=margin;
         existing.usdAmount=notional;
         existing.entryPrice=entryPrice;
         existing.leverage=realLev;
         existing.qty=qty;
         existing.realUPnL=uPnl;
       }else{
-        // Position on KuCoin but not in bot — recovered after redeploy
         bot.openTrades.push({
           id:crypto.randomUUID().slice(0,8),symbol:spotSym,side,type:'futures',
           leverage:realLev,entryPrice,qty,contracts:Math.abs(pos.currentQty),
-          usdAmount:notional,margin:realMargin,realUPnL:uPnl,
+          usdAmount:notional,margin:margin,realUPnL:uPnl,
           sl:null,tp:null,confidence:0,agreeing:0,
           openTime:new Date().toISOString(),status:'open',
           highSince:entryPrice,lowSince:entryPrice,trailingSl:null,
           isLive:true,recovered:true
         });
-        botLog(`RECOVERED: ${side.toUpperCase()} ${spotSym} @$${entryPrice.toFixed(4)} | margin:$${realMargin.toFixed(2)} | lev:${realLev.toFixed(0)}x`);
+        botLog(`RECOVERED: ${side.toUpperCase()} ${spotSym} @$${entryPrice.toFixed(6)} | margin:$${margin.toFixed(2)} | notional:$${notional.toFixed(2)} | lev:${realLev.toFixed(1)}x`);
       }
     }
 
@@ -1434,6 +1439,40 @@ app.get('/debug',(req,res)=>{
   }
   h+='</pre></body></html>';
   res.send(h);
+});
+
+// Raw KuCoin positions — shows exactly what KuCoin returns
+app.get('/debug/positions',async(req,res)=>{
+  if(!bot.credentials)return res.json({error:'No credentials'});
+  try{
+    const{apiKey,apiSecret,passphrase}=bot.credentials;
+    const ep='/api/v1/positions';
+    const r=await fetch('https://api-futures.kucoin.com'+ep,{headers:kcH('GET',ep,null,apiKey,apiSecret,passphrase)});
+    const d=await safeJSON(r);
+    if(d.code!=='200000')return res.json({error:d.msg});
+    const positions=d.data.filter(p=>p.currentQty&&p.currentQty!==0);
+    // Show relevant fields
+    const summary=positions.map(p=>({
+      symbol:p.symbol,
+      side:p.currentQty>0?'LONG':'SHORT',
+      contracts:Math.abs(p.currentQty),
+      entryPrice:p.avgEntryPrice,
+      markPrice:p.markPrice,
+      leverage:p.realLeverage,
+      posCost:p.posCost,     // what we THOUGHT was margin
+      posInit:p.posInit,     // actual initial margin
+      posMargin:p.posMargin, // total margin held
+      posMaint:p.posMaint,   // maintenance margin
+      unrealisedPnl:p.unrealisedPnl,
+      liquidationPrice:p.liquidationPrice,
+      marginType:p.marginType
+    }));
+    // Also show what the bot thinks
+    const botTrades=bot.openTrades.filter(t=>t.isLive).map(t=>({
+      symbol:t.symbol,side:t.side,botMargin:t.margin,botUsdAmount:t.usdAmount,botLev:t.leverage
+    }));
+    res.json({success:true,kucoin:summary,bot:botTrades,raw:positions});
+  }catch(e){res.json({error:e.message})}
 });
 app.get('/api/bot/wallet',mw,async(req,res)=>{
   if(!bot.credentials)return res.json({connected:false});
