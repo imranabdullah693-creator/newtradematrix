@@ -12,6 +12,7 @@ function mw(req,res,next){if(!AUTH.password)return next();const t=(req.headers.a
 app.post('/api/auth/setup',(req,res)=>{if(AUTH.password)return res.status(400).json({error:'Account exists. Please login.'});const{email,password}=req.body||{};if(!email||!email.includes('@'))return res.status(400).json({error:'Valid email required'});if(!password||password.length<4)return res.status(400).json({error:'Password 4+ chars'});AUTH.email=email;AUTH.password=hashPw(password);res.json({success:true,token:genToken()})});
 app.post('/api/auth/login',(req,res)=>{if(!AUTH.password)return res.json({needsSetup:true});const{email,password}=req.body||{};if(!email||!password)return res.status(400).json({error:'Email and password required'});if(email!==AUTH.email)return res.status(401).json({error:'Email not found'});if(hashPw(password)!==AUTH.password)return res.status(401).json({error:'Wrong password'});res.json({success:true,token:genToken()})});
 app.get('/api/auth/check',(req,res)=>{if(!AUTH.password)return res.json({needsSetup:true});const t=(req.headers.authorization||'').replace('Bearer ','');res.json({authenticated:!!t&&AUTH.tokens.includes(t),needsSetup:false})});
+app.post('/api/auth/reset',(req,res)=>{const{email}=req.body||{};if(!email)return res.status(400).json({error:'Email required'});if(AUTH.email&&email!==AUTH.email)return res.status(400).json({error:'Email does not match'});AUTH={email:null,password:null,tokens:[]};saveAuth();res.json({success:true,message:'Account reset. You can create a new one.'})});
 
 // ═══ SIGNING ═══
 function hmacB64(m,s){return crypto.createHmac('sha256',s).update(m).digest('base64')}
@@ -75,7 +76,7 @@ async function fetchNews(){
       try{
         const r=await fetchWithTimeout('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest'+cat);
         const d=await safeJSON(r);
-        if(d.Data)for(const a of d.Data.slice(0,15)){const x=classify(a.title,a.body,a.source,a.url,a.published_on*1000);if(x)articles.push(x)}
+        if(d.Data){const articles_arr=Array.isArray(d.Data)?d.Data:d.Data.Data||Object.values(d.Data);if(Array.isArray(articles_arr))for(const a of articles_arr.slice(0,15)){const x=classify(a.title,a.body,a.source,a.url,(a.published_on||0)*1000);if(x)articles.push(x)}}
       }catch(e){console.log('CryptoCompare err:',e.message)}
     }
 
