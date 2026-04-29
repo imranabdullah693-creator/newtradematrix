@@ -417,6 +417,215 @@ const AGENT_TIERS={
   volume_expert:    {tier:3,weight:1,why:'Volume can be wash-traded'}
 };
 
+// ═══ FEATURE 1: CORRELATION GROUPS — don't stack correlated trades ═══
+const CORR_GROUPS={
+  'L1':['BTC-USDT'],  // BTC is its own group
+  'ETH':['ETH-USDT'], // ETH semi-independent
+  'ALT_HIGH':['SOL-USDT','AVAX-USDT','DOT-USDT','NEAR-USDT','APT-USDT','SUI-USDT','SEI-USDT','INJ-USDT','STX-USDT'], // L1 alts
+  'ALT_MID':['LINK-USDT','UNI-USDT','ATOM-USDT','AAVE-USDT','RUNE-USDT','PENDLE-USDT','DYDX-USDT','CRV-USDT','GRT-USDT'], // DeFi
+  'ALT_LOW':['ADA-USDT','XRP-USDT','XLM-USDT','HBAR-USDT','VET-USDT','EOS-USDT','ALGO-USDT','LTC-USDT'], // Old L1s
+  'MEME':['DOGE-USDT','SHIB-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT'], // Meme coins move together
+  'AI_GAMING':['FET-USDT','RENDER-USDT','IMX-USDT','SAND-USDT','MANA-USDT','GALA-USDT','JASMY-USDT'], // AI/Gaming
+  'DEFI2':['FIL-USDT','ARB-USDT','OP-USDT','TIA-USDT','ONDO-USDT','JUP-USDT','FTM-USDT','KAS-USDT','BNB-USDT'] // L2/Infra
+};
+
+function getCorrelationGroup(sym){
+  for(const[group,syms] of Object.entries(CORR_GROUPS)){
+    if(syms.includes(sym))return group;
+  }
+  return 'OTHER';
+}
+
+function checkCorrelation(sym,side){
+  const group=getCorrelationGroup(sym);
+  // Allow max 1 open trade per correlation group in same direction
+  const sameGroupTrades=bot.openTrades.filter(t=>{
+    if(t.symbol===sym)return false; // same coin check is done elsewhere
+    return getCorrelationGroup(t.symbol)===group&&t.side===side;
+  });
+  return sameGroupTrades.length===0; // true = OK to trade
+}
+
+// ═══ FEATURE 2: REGIME DETECTION — more granular than bullish/bearish ═══
+function detectRegime(a){
+  const atrPct=a.atr&&a.price?(a.atr/a.price)*100:2;
+  const adx=a.adx||15;
+  const bbWidth=a.bbUpper&&a.bbLower?((a.bbUpper-a.bbLower)/(a.bbSma||a.price))*100:4;
+  const cond=a.condition||'neutral';
+  const rsi=a.rsi||50;
+
+  // High Volatility Chaos: ATR extreme, ADX low (no trend, just wild)
+  if(atrPct>4&&adx<20)return{regime:'HIGH_VOL_CHAOS',tradeable:false,reason:'Wild price action with no trend — stay out'};
+
+  // Breakout Compression: very tight BBs + low ATR = spring coiled
+  if(bbWidth<3&&atrPct<1.5)return{regime:'BREAKOUT_COMPRESSION',tradeable:true,reason:'Volatility squeeze — big move coming. Trade the breakout direction.'};
+
+  // Trending Up: strong bullish + high ADX
+  if(cond.includes('bullish')&&adx>25)return{regime:'TRENDING_UP',tradeable:true,reason:'Strong uptrend — buy dips, trail stops.'};
+
+  // Trending Down: strong bearish + high ADX
+  if(cond.includes('bearish')&&adx>25)return{regime:'TRENDING_DOWN',tradeable:true,reason:'Strong downtrend — sell rallies.'};
+
+  // Mean Reverting: sideways, RSI at extremes, low ADX
+  if(adx<20&&(rsi<30||rsi>70))return{regime:'MEAN_REVERTING',tradeable:true,reason:'Range-bound with extreme RSI — fade the extreme.'};
+
+  // Low Vol Drift: flat, no momentum, boring
+  if(atrPct<1.5&&adx<15)return{regime:'LOW_VOL_DRIFT',tradeable:false,reason:'No volatility, no trend — nothing to trade.'};
+
+  // Mild trend
+  if(cond.includes('bullish'))return{regime:'MILD_UPTREND',tradeable:true,reason:'Moderate uptrend — be cautious.'};
+  if(cond.includes('bearish'))return{regime:'MILD_DOWNTREND',tradeable:true,reason:'Moderate downtrend — be cautious.'};
+
+  return{regime:'UNCERTAIN',tradeable:false,reason:'No clear regime — wait for clarity.'};
+}
+
+// ═══ FEATURE 3: MONTE CARLO SIMULATION ═══
+function monteCarloSim(price,slDist,tpDist,side,atr,numSims=200,steps=20){
+  // Uses real ATR-based volatility to simulate forward price paths
+  // Each step = ~15 minutes (one candle)
+  const volPerStep=atr/price; // fractional move per candle
+  let tpHits=0,slHits=0,noHits=0;
+  let totalReturn=0,worstReturn=0;
+  const sl=side==='buy'?price-slDist:price+slDist;
+  const tp=side==='buy'?price+tpDist:price-tpDist;
+
+  for(let i=0;i<numSims;i++){
+    let p=price;
+    let hitTP=false,hitSL=false;
+    for(let s=0;s<steps;s++){
+      // Random walk with slight drift based on trend
+      const drift=0; // neutral — let volatility decide
+      const move=drift+(Math.random()-0.5)*2*volPerStep;
+      p=p*(1+move);
+      if(side==='buy'){
+        if(p<=sl){hitSL=true;break}
+        if(p>=tp){hitTP=true;break}
+      }else{
+        if(p>=sl){hitSL=true;break}
+        if(p<=tp){hitTP=true;break}
+      }
+    }
+    if(hitTP){tpHits++;totalReturn+=(tpDist/price)*100}
+    else if(hitSL){slHits++;totalReturn-=(slDist/price)*100}
+    else{noHits++;const endReturn=side==='buy'?((p-price)/price)*100:((price-p)/price)*100;totalReturn+=endReturn}
+    const thisReturn=hitTP?(tpDist/price)*100:hitSL?-(slDist/price)*100:(side==='buy'?((p-price)/price)*100:((price-p)/price)*100);
+    if(thisReturn<worstReturn)worstReturn=thisReturn;
+  }
+
+  return{
+    tpProb:Math.round(tpHits/numSims*100),
+    slProb:Math.round(slHits/numSims*100),
+    noHitPct:Math.round(noHits/numSims*100),
+    expectedReturn:Math.round(totalReturn/numSims*100)/100,
+    worstCase:Math.round(worstReturn*100)/100,
+    sims:numSims
+  };
+}
+
+// ═══ FEATURE 4: QUANT GRADE — A+/A/B/C/Reject ═══
+function quantGrade(council,tpProb,regime,mc,btcContext){
+  let score=0;
+
+  // Council strength (0-30)
+  if(council.confidence>=90)score+=30;
+  else if(council.confidence>=80)score+=22;
+  else if(council.confidence>=70)score+=15;
+  else score+=5;
+
+  // TP probability (0-25)
+  if(tpProb>=85)score+=25;
+  else if(tpProb>=75)score+=18;
+  else if(tpProb>=65)score+=12;
+  else score+=3;
+
+  // Monte Carlo confirmation (0-20)
+  if(mc.tpProb>=70)score+=20;
+  else if(mc.tpProb>=55)score+=12;
+  else if(mc.tpProb>=45)score+=5;
+  else score-=5;
+
+  // Regime (0-15)
+  if(regime.regime==='TRENDING_UP'||regime.regime==='TRENDING_DOWN')score+=15;
+  else if(regime.regime==='BREAKOUT_COMPRESSION')score+=12;
+  else if(regime.regime==='MEAN_REVERTING')score+=8;
+  else if(regime.regime==='MILD_UPTREND'||regime.regime==='MILD_DOWNTREND')score+=5;
+  else if(!regime.tradeable)score-=10;
+
+  // BTC alignment (0-10)
+  if(btcContext){
+    const btcBull=btcContext.condition&&btcContext.condition.includes('bullish');
+    const btcBear=btcContext.condition&&btcContext.condition.includes('bearish');
+    if((council.decision==='buy'&&btcBull)||(council.decision==='sell'&&btcBear))score+=10;
+    else if((council.decision==='buy'&&btcBear)||(council.decision==='sell'&&btcBull))score-=8;
+  }
+
+  // Grade
+  let grade,sizeMultiplier;
+  if(score>=85){grade='A+';sizeMultiplier=1.0}
+  else if(score>=70){grade='A';sizeMultiplier=0.8}
+  else if(score>=55){grade='B';sizeMultiplier=0.6}
+  else if(score>=40){grade='C';sizeMultiplier=0.4}
+  else{grade='Reject';sizeMultiplier=0}
+
+  return{grade,score,sizeMultiplier,breakdown:{council:council.confidence,tpProb,mcTP:mc.tpProb,regime:regime.regime,btc:btcContext?.condition||'?'}};
+}
+
+// ═══ FEATURE 5: SHADOW PAPER TRADING — silent track record for Sharpe ═══
+let shadowTrades={active:[],history:[],stats:{wins:0,losses:0,totalPnL:0,totalRR:0}};
+
+function shadowRecord(sym,side,price,sl,tp,confidence,grade){
+  // Record every signal — whether we actually trade or not
+  shadowTrades.active.push({
+    symbol:sym,side,entryPrice:price,sl,tp,confidence,grade,
+    time:Date.now(),resolved:false
+  });
+  // Keep max 500 active shadows
+  if(shadowTrades.active.length>500)shadowTrades.active=shadowTrades.active.slice(-500);
+}
+
+function shadowUpdate(sym,currentPrice){
+  // Check all active shadow trades for this symbol
+  shadowTrades.active=shadowTrades.active.filter(s=>{
+    if(s.symbol!==sym||s.resolved)return true;
+    const hit_tp=(s.side==='buy'&&currentPrice>=s.tp)||(s.side==='sell'&&currentPrice<=s.tp);
+    const hit_sl=(s.side==='buy'&&currentPrice<=s.sl)||(s.side==='sell'&&currentPrice>=s.sl);
+    if(!hit_tp&&!hit_sl){
+      // Check timeout — 4 hours max
+      if(Date.now()-s.time>4*60*60*1000){
+        s.resolved=true;
+        const dir=s.side==='buy'?1:-1;
+        s.exitPrice=currentPrice;
+        s.pnlPct=((currentPrice-s.entryPrice)/s.entryPrice)*100*dir;
+        s.result='timeout';
+        shadowTrades.history.push(s);
+        if(s.pnlPct>0)shadowTrades.stats.wins++;else shadowTrades.stats.losses++;
+        shadowTrades.stats.totalPnL+=s.pnlPct;
+        return false;
+      }
+      return true;
+    }
+    s.resolved=true;
+    if(hit_tp){s.exitPrice=s.tp;s.result='tp';s.pnlPct=Math.abs((s.tp-s.entryPrice)/s.entryPrice)*100;shadowTrades.stats.wins++}
+    else{s.exitPrice=s.sl;s.result='sl';s.pnlPct=-Math.abs((s.sl-s.entryPrice)/s.entryPrice)*100;shadowTrades.stats.losses++}
+    shadowTrades.stats.totalPnL+=s.pnlPct;
+    shadowTrades.history.push(s);
+    if(shadowTrades.history.length>1000)shadowTrades.history=shadowTrades.history.slice(-1000);
+    return false;
+  });
+}
+
+function getSharpe(){
+  const h=shadowTrades.history;
+  if(h.length<10)return{sharpe:0,trades:h.length,note:'Need 10+ shadow trades'};
+  const returns=h.map(t=>t.pnlPct);
+  const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
+  const variance=returns.reduce((a,b)=>a+(b-mean)**2,0)/returns.length;
+  const std=Math.sqrt(variance);
+  const sharpe=std>0?mean/std*Math.sqrt(252):0; // annualized
+  const winRate=shadowTrades.stats.wins/(shadowTrades.stats.wins+shadowTrades.stats.losses)*100;
+  return{sharpe:Math.round(sharpe*100)/100,mean:Math.round(mean*100)/100,std:Math.round(std*100)/100,winRate:Math.round(winRate),trades:h.length};
+}
+
 // ═══ COUNCIL VOTE (tiered weighted + multi-timeframe) ═══
 function councilVote(a,requiredAgree=4){
   const votes={};
@@ -856,6 +1065,9 @@ async function tick(){
         bot.lastAnalysis[sym]=a;
         const{price,atr}=a;if(!price||!atr)continue;
 
+        // Update shadow trades for Sharpe tracking
+        shadowUpdate(sym,price);
+
         // Check open trades (check ALL open trades, not just this batch)
         for(const t of[...bot.openTrades]){
           if(t.symbol!==sym)continue;
@@ -909,15 +1121,29 @@ async function tick(){
           continue;
         }
 
-        // ═══ TP PROBABILITY CHECK — only trade if TP is more likely than SL ═══
+        // ═══ CORRELATION FILTER — don't stack same-group trades ═══
+        if(!checkCorrelation(sym,council.decision)){
+          botLog(`${coin} SKIP: correlated trade already open in ${getCorrelationGroup(sym)} group`);
+          continue;
+        }
+
+        // ═══ REGIME DETECTION ═══
+        const regime=detectRegime(a);
+        if(!regime.tradeable){
+          botLog(`${coin} SKIP: regime ${regime.regime} — ${regime.reason}`);
+          continue;
+        }
+
+        // ═══ MONTE CARLO SIMULATION ═══
         const slDist=atr*bot.slATR;
         const tpDist=atr*bot.tpATR;
+        const mc=monteCarloSim(price,slDist,tpDist,council.decision,atr);
+
+        // ═══ TP PROBABILITY (hybrid: rule-based + Monte Carlo) ═══
         const htf=a.htf||{};
         const htfAligned=(council.decision==='buy'&&htf.bias&&htf.bias.includes('bullish'))||
                          (council.decision==='sell'&&htf.bias&&htf.bias.includes('bearish'));
         const htfStrong=htf.bias&&htf.bias.includes('strong');
-
-        // TP probability scoring
         let tpProb=50;
         if(htfAligned)tpProb+=15;
         if(htfStrong)tpProb+=10;
@@ -931,13 +1157,31 @@ async function tick(){
           if(btcAgrees)tpProb+=10;
           if(!btcAgrees&&!a.btc.condition.includes('neutral'))tpProb-=15;
         }
+        // Blend with Monte Carlo (60% rule-based, 40% MC)
+        tpProb=Math.round(tpProb*0.6+mc.tpProb*0.4);
 
         if(tpProb<tpProbThreshold){
-          botLog(`${coin} SKIP: TP prob ${tpProb}% < ${tpProbThreshold}%${dailyTargetHit?' (raised after 🎯)':''} | HTF:${htf.bias||'?'} R:R=${(tpDist/slDist).toFixed(1)}`);
+          botLog(`${coin} SKIP: TP ${tpProb}% < ${tpProbThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${dailyTargetHit?' 🎯':''}`);
+          // Still record as shadow trade for Sharpe tracking
+          shadowRecord(sym,council.decision,price,price-(council.decision==='buy'?slDist:-slDist),price+(council.decision==='buy'?tpDist:-tpDist),council.confidence,'Skip');
           continue;
         }
 
-        botLog(`${coin} ✓ TP prob: ${tpProb}% | conf:${council.confidence}% | HTF:${htf.bias||'?'} | BTC:${a.btc?a.btc.condition:'?'} | R:R=${(tpDist/slDist).toFixed(1)}${dailyTargetHit?' 🎯 BONUS TRADE':''}`);
+        // ═══ QUANT GRADE — A+/A/B/C/Reject ═══
+        const qg=quantGrade(council,tpProb,regime,mc,a.btc);
+        if(qg.grade==='Reject'){
+          botLog(`${coin} REJECT: quant score ${qg.score} — not worth the risk`);
+          shadowRecord(sym,council.decision,price,price-(council.decision==='buy'?slDist:-slDist),price+(council.decision==='buy'?tpDist:-tpDist),council.confidence,qg.grade);
+          continue;
+        }
+
+        const sl=council.decision==='buy'?price-slDist:price+slDist;
+        const tp=council.decision==='buy'?price+tpDist:price-tpDist;
+
+        // Record shadow trade (even if we execute — tracks all signals)
+        shadowRecord(sym,council.decision,price,sl,tp,council.confidence,qg.grade);
+
+        botLog(`${coin} ✓ Grade:${qg.grade}(${qg.score}) | TP:${tpProb}% | MC:${mc.tpProb}%tp | regime:${regime.regime} | R:R=${(tpDist/slDist).toFixed(1)} | exp:${mc.expectedReturn}%${dailyTargetHit?' 🎯 BONUS':''}`);
 
         // Auto-leverage: tighter SL = higher leverage for same risk
         const slDistPct=(atr*bot.slATR)/price*100;
@@ -1017,8 +1261,13 @@ async function tick(){
           continue;
         }
 
-        const sl=council.decision==='buy'?price-slDist:price+slDist;
-        const tp=council.decision==='buy'?price+atr*bot.tpATR:price-atr*bot.tpATR;
+        // Apply quant grade size multiplier (A+=100%, A=80%, B=60%, C=40%)
+        posUSD=Math.round(posUSD*qg.sizeMultiplier*100)/100;
+        if(posUSD<minSize){
+          botLog(`${coin} SKIP: grade ${qg.grade} reduced pos to $${posUSD.toFixed(2)} < min $${minSize}`);
+          continue;
+        }
+
         const slPct=((slDist/price)*100).toFixed(2);
 
         // Execute
@@ -1292,6 +1541,8 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     hasCredentials:!!bot.credentials,sentiment:sentimentCache,newsOverall:newsCache.overall,newsSentiment:newsCache.sentiment,recentNews:(newsCache.articles||[]).slice(0,15),
     // Top opportunities — ranked by council score
     opportunities:Object.entries(bot.lastCouncil).map(([sym,c])=>({symbol:sym.replace('-USDT',''),decision:c.decision,confidence:c.confidence,buyScore:c.buyScore,sellScore:c.sellScore,score:Math.max(c.buyScore||0,c.sellScore||0),htf:c.htf||'?'})).sort((a,b)=>b.score-a.score).slice(0,10),
+    sharpe:getSharpe(),
+    shadowStats:{active:shadowTrades.active.length,history:shadowTrades.history.length,wins:shadowTrades.stats.wins,losses:shadowTrades.stats.losses},
     // Market regime
     regime:{
       btc:btcAnalysisCache?{condition:btcAnalysisCache.condition,rsi:btcAnalysisCache.rsi,change1h:btcAnalysisCache.priceChange1h,change4h:btcAnalysisCache.priceChange4h}:null,
@@ -1420,6 +1671,10 @@ app.get('/debug',(req,res)=>{
   h+='openTrades: '+bot.openTrades.length+' | historyCount: '+bot.history.length+'\n';
   const dBal=getCurBal();const dPct=dBal>0?((bot.dailyPnL/dBal)*100):0;
   h+='dailyPnL: $'+bot.dailyPnL.toFixed(2)+' ('+dPct.toFixed(2)+'%) | target: '+bot.dailyTargetPct+'% '+(dPct>=bot.dailyTargetPct?'<span class="ok">🎯 TARGET HIT — only 85%+ TP prob trades allowed</span>':'<span class="warn">trading (65%+ TP prob)</span>')+'\n';
+  const sharpe=getSharpe();
+  h+='</pre><h2>QUANT STATS (Shadow Trading)</h2><pre>';
+  h+='sharpe: '+(sharpe.sharpe>=1.5?'<span class="ok">':'<span class="warn">')+sharpe.sharpe+'</span> | winRate: '+sharpe.winRate+'% | avgReturn: '+sharpe.mean+'% | signals: '+sharpe.trades+'\n';
+  h+='shadow active: '+shadowTrades.active.length+' | resolved: '+shadowTrades.history.length+' | W:'+shadowTrades.stats.wins+' L:'+shadowTrades.stats.losses+'\n';
   h+='</pre>';
   h+='<h2>NEWS CACHE</h2><pre>';
   h+='articles: '+(newsCache.articles?.length||0)+'\n';
