@@ -103,6 +103,8 @@
       <div class="cd glass"><div class="ct">🏆 Top Opportunities</div><div id="opps-content" style="font-size:10px;color:var(--t3)">Waiting for scan...</div></div>
       <!-- Quant Stats -->
       <div class="cd glass"><div class="ct">📐 Quant Stats (Shadow Trading)</div><div id="sharpe-content" style="font-size:10px;color:var(--t3)">Building track record...</div></div>
+      <!-- Supervisor -->
+      <div class="cd glass"><div class="ct">🛡 Supervisor</div><div id="sup-content" style="font-size:10px;color:var(--t3)">Monitoring...</div></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
       <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Position</th><th>Margin</th><th>Lev</th><th>Entry</th><th>Now</th><th>uPnL</th><th>SL%</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="10" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
       <div class="cd"><div class="ct">📰 Latest News</div><div id="news-mini" style="max-height:150px;overflow-y:auto;font-size:10px">Loading...</div></div>
@@ -190,7 +192,7 @@ window.onload=async()=>{
 }
 
 // Nav
-document.querySelectorAll('.ni[data-p]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));el.classList.add('on');const pg=document.getElementById('pg-'+el.dataset.p);if(pg)pg.classList.add('act');document.getElementById('sb').classList.remove('open');if(el.dataset.p==='chart')loadChart()});
+document.querySelectorAll('.ni[data-p]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));el.classList.add('on');const pg=document.getElementById('pg-'+el.dataset.p);if(pg)pg.classList.add('act');document.getElementById('sb').classList.remove('open');if(el.dataset.p==='chart')loadChart();if(el.dataset.p==='news')refreshNews()});
 
 function init(){refresh();setInterval(refresh,5000);refreshWallet();setInterval(refreshWallet,30000)}
 
@@ -282,6 +284,38 @@ async function refresh(){
       +(s.trades<10?'<div style="margin-top:6px;font-size:9px;color:var(--t3)">Need '+(10-s.trades)+' more signals for reliable Sharpe</div>':'');
   }
 
+  // Supervisor
+  if(d.supervisor){
+    const sv=d.supervisor;
+    const cbCol=sv.circuitBroken?'var(--re)':'var(--gr)';
+    const wrCol=sv.recentWinRate!==null?(sv.recentWinRate>=50?'var(--gr)':sv.recentWinRate>=30?'var(--am)':'var(--re)'):'var(--t3)';
+    const modeCol=sv.mode==='normal'?'var(--gr)':sv.mode==='cautious'?'var(--am)':sv.mode==='recovery'?'var(--re)':sv.mode==='aggressive'?'var(--bl)':'var(--t3)';
+    let supHtml='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(90px,1fr))">';
+    supHtml+='<div class="st"><div class="sl">Mode</div><div class="sv" style="color:'+modeCol+';font-size:12px">'+sv.mode.toUpperCase()+'</div></div>';
+    supHtml+='<div class="st"><div class="sl">Circuit</div><div class="sv" style="color:'+cbCol+';font-size:12px">'+(sv.circuitBroken?'🛑 ON':'✅ OFF')+'</div></div>';
+    supHtml+='<div class="st"><div class="sl">Streak</div><div class="sv" style="font-size:12px;color:'+(sv.consecutiveLosses>=2?'var(--re)':sv.consecutiveWins>=2?'var(--gr)':'var(--t1)')+'">'+(sv.consecutiveWins>0?sv.consecutiveWins+'W':'')+(sv.consecutiveLosses>0?sv.consecutiveLosses+'L':'')+(sv.consecutiveWins===0&&sv.consecutiveLosses===0?'—':'')+'</div></div>';
+    supHtml+='<div class="st"><div class="sl">Win%</div><div class="sv" style="color:'+wrCol+';font-size:12px">'+(sv.recentWinRate!==null?sv.recentWinRate+'%':'—')+'</div></div>';
+    supHtml+='</div>';
+    // Recent adjustments
+    if(sv.recentAdjustments&&sv.recentAdjustments.length){
+      supHtml+='<div style="margin-top:8px;font-size:9px;color:var(--t3)">Recent Adjustments:</div><div style="margin-top:4px">';
+      for(const a of sv.recentAdjustments){
+        supHtml+='<div style="font-family:var(--mono);font-size:8px;color:var(--am);padding:2px 0">🔧 '+a.action+'</div>';
+      }
+      supHtml+='</div>';
+    }
+    // Agent accuracy
+    if(sv.agentReport&&Object.keys(sv.agentReport).length){
+      supHtml+='<div style="margin-top:8px;font-size:9px;color:var(--t3)">Agent Accuracy:</div><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
+      for(const[name,s] of Object.entries(sv.agentReport)){
+        const col=s.rating==='reliable'?'var(--gr)':s.rating==='average'?'var(--am)':'var(--re)';
+        supHtml+='<span style="background:var(--bg2);padding:2px 6px;border-radius:3px;font-family:var(--mono);font-size:8px"><span style="color:var(--t2)">'+name.replace(/_/g,' ')+'</span> <span style="color:'+col+'">'+s.accuracy+'%</span></span>';
+      }
+      supHtml+='</div>';
+    }
+    document.getElementById('sup-content').innerHTML=supHtml;
+  }
+
   // News mini
   if(d.recentNews&&d.recentNews.length){document.getElementById('news-mini').innerHTML=d.recentNews.slice(0,5).map(n=>'<div class="news-item"><span style="color:var(--t1)">'+n.title+'</span><span class="news-score" style="background:'+(n.score>0?'var(--gd)':'var(--rd)')+';color:'+(n.score>0?'var(--gr)':'var(--re)')+'">'+(n.score>0?'+':'')+n.score+'</span><br/><span class="news-src">'+n.source+' • '+(n.type==='world'?'World':'Crypto')+'</span></div>').join('')}
   // Log
@@ -364,9 +398,46 @@ async function showCouncil(){const sym=document.getElementById('council-sym').va
 }
 
 // Analysis
-async function doAnalysis(){const sym=document.getElementById('asym').value;const box=document.getElementById('ares');box.innerHTML='<span style="color:var(--am)">Analyzing...</span>';const d=await api('/api/bot/diagnose/'+sym);if(!d.success){box.innerHTML='<span style="color:var(--re)">'+d.error+'</span>';return}
-  const a=d.steps.find(s=>s.step==='analyze')||{};
-  box.innerHTML='<div class="sr" style="margin:10px 0">'+[['Price','$'+fmtP(a.price)],['RSI',a.rsi],['Condition',a.condition],['ATR','$'+a.atr]].map(([l,v])=>'<div class="st"><div class="sl">'+l+'</div><div class="sv" style="font-size:12px">'+(v||'—')+'</div></div>').join('')+'</div>';
+async function doAnalysis(){
+  const sym=document.getElementById('asym').value;const box=document.getElementById('ares');
+  box.innerHTML='<span style="color:var(--am)">Running full quant analysis...</span>';
+  const d=await api('/api/bot/quant/'+sym);
+  if(!d.success){box.innerHTML='<span style="color:var(--re)">'+(d.error||'Failed')+'</span>';return}
+
+  const decCol=d.council.decision==='buy'?'var(--gr)':d.council.decision==='sell'?'var(--re)':'var(--am)';
+  const gradeCol=d.quantGrade.grade==='A+'?'var(--gr)':d.quantGrade.grade==='A'?'var(--gr)':d.quantGrade.grade==='B'?'var(--bl)':d.quantGrade.grade==='C'?'var(--am)':'var(--re)';
+  const regCol=d.regime.tradeable?'var(--gr)':'var(--re)';
+
+  let h='<div style="padding:12px;border-radius:6px;background:'+(d.council.decision==='buy'?'var(--gd)':d.council.decision==='sell'?'var(--rd)':'var(--bg3)')+';margin-bottom:12px;text-align:center">';
+  h+='<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:'+decCol+'">'+d.council.decision.toUpperCase()+'</div>';
+  h+='<div style="font-size:11px;color:var(--t2)">Grade: <span style="color:'+gradeCol+';font-weight:700">'+d.quantGrade.grade+'</span> ('+d.quantGrade.score+'/100) | Conf: '+d.council.confidence+'%</div></div>';
+
+  h+='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(100px,1fr));margin-bottom:12px">';
+  h+='<div class="st"><div class="sl">Price</div><div class="sv" style="font-size:13px">$'+fmtP(d.price)+'</div></div>';
+  h+='<div class="st"><div class="sl">RSI</div><div class="sv" style="font-size:13px">'+(d.rsi?d.rsi.toFixed(0):'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">Regime</div><div class="sv" style="font-size:10px;color:'+regCol+'">'+d.regime.regime.replace(/_/g,' ')+'</div></div>';
+  h+='<div class="st"><div class="sl">R:R</div><div class="sv" style="font-size:13px">1:'+d.levels.rrRatio+'</div></div>';
+  h+='<div class="st"><div class="sl">MC TP%</div><div class="sv" style="font-size:13px;color:'+(d.monteCarlo.tpProb>=50?'var(--gr)':'var(--re)')+'">'+d.monteCarlo.tpProb+'%</div></div>';
+  h+='<div class="st"><div class="sl">Exp Return</div><div class="sv '+(d.monteCarlo.expectedReturn>=0?'up':'dn')+'" style="font-size:13px">'+(d.monteCarlo.expectedReturn>=0?'+':'')+d.monteCarlo.expectedReturn+'%</div></div>';
+  h+='</div>';
+
+  h+='<div style="display:flex;gap:12px;margin-bottom:12px;font-family:var(--mono);font-size:10px">';
+  h+='<span style="color:var(--gr)">SL: $'+fmtP(d.levels.sl)+'</span>';
+  h+='<span style="color:var(--bl)">Entry: $'+fmtP(d.price)+'</span>';
+  h+='<span style="color:var(--am)">TP: $'+fmtP(d.levels.tp)+'</span>';
+  h+='</div>';
+
+  h+='<div style="font-size:10px;color:var(--t2);margin-bottom:8px"><strong>Monte Carlo:</strong> '+d.monteCarlo.sims+' simulations → '+d.monteCarlo.tpProb+'% hit TP, '+d.monteCarlo.slProb+'% hit SL, worst case: '+d.monteCarlo.worstCase+'%</div>';
+  h+='<div style="font-size:10px;color:var(--t2);margin-bottom:8px"><strong>Regime:</strong> '+d.regime.reason+'</div>';
+  if(d.btc)h+='<div style="font-size:10px;color:var(--t2);margin-bottom:8px"><strong>BTC:</strong> '+d.btc.condition+' | RSI:'+d.btc.rsi?.toFixed(0)+' | 1h: '+(d.btc.priceChange1h>=0?'+':'')+d.btc.priceChange1h?.toFixed(2)+'%</div>';
+
+  h+='<div style="font-size:9px;color:var(--t3);margin-top:8px">Agent votes:</div><div style="display:flex;flex-direction:column;gap:3px;margin-top:4px">';
+  for(const[name,v] of Object.entries(d.council.votes||{})){
+    const vc=v.vote==='buy'?'var(--gr)':v.vote==='sell'?'var(--re)':'var(--t3)';
+    h+='<div style="display:flex;align-items:center;gap:6px;font-size:9px"><span style="color:var(--t2);min-width:85px">'+name.replace(/_/g,' ')+'</span><span style="color:'+vc+';font-family:var(--mono);font-weight:600;min-width:35px">'+v.vote.toUpperCase()+'</span><span style="color:var(--t3);font-size:8px">'+v.confidence+'% — '+(v.reason||'').slice(0,80)+'</span></div>';
+  }
+  h+='</div>';
+  box.innerHTML=h;
 }
 
 // Backtest
