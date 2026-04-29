@@ -101,6 +101,8 @@
       <div class="cd glass"><div class="ct">🌐 Market Regime</div><div id="regime-content" style="font-size:10px;color:var(--t3)">Waiting for data...</div></div>
       <!-- Top Opportunities -->
       <div class="cd glass"><div class="ct">🏆 Top Opportunities</div><div id="opps-content" style="font-size:10px;color:var(--t3)">Waiting for scan...</div></div>
+      <!-- Quant Stats -->
+      <div class="cd glass"><div class="ct">📐 Quant Stats (Shadow Trading)</div><div id="sharpe-content" style="font-size:10px;color:var(--t3)">Building track record...</div></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
       <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Position</th><th>Margin</th><th>Lev</th><th>Entry</th><th>Now</th><th>uPnL</th><th>SL%</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="10" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
       <div class="cd"><div class="ct">📰 Latest News</div><div id="news-mini" style="max-height:150px;overflow-y:auto;font-size:10px">Loading...</div></div>
@@ -263,6 +265,21 @@ async function refresh(){
       const bgCol=o.decision==='buy'?'var(--gd)':o.decision==='sell'?'var(--rd)':'var(--bg3)';
       return '<div class="opp-row"><span class="opp-rank">#'+(i+1)+'</span><span class="opp-sym">'+o.symbol+'</span><span class="tag tag-'+o.decision+'">'+o.decision+'</span><span class="opp-score" style="background:'+bgCol+';color:'+col+'">'+o.score+' pts</span><span style="font-size:9px;color:var(--t3);margin-left:auto">conf: '+o.confidence+'% | HTF: '+(o.htf||'—')+'</span></div>';
     }).join('');
+  }
+
+  // Sharpe / Shadow stats
+  if(d.sharpe){
+    const s=d.sharpe;const ss=d.shadowStats||{};
+    const shCol=s.sharpe>=1.5?'var(--gr)':s.sharpe>=0.5?'var(--am)':'var(--re)';
+    const wrCol=s.winRate>=55?'var(--gr)':s.winRate>=45?'var(--am)':'var(--re)';
+    document.getElementById('sharpe-content').innerHTML=
+      '<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(100px,1fr))">'
+      +'<div class="st"><div class="sl">Sharpe Ratio</div><div class="sv" style="color:'+shCol+';font-size:14px">'+s.sharpe+'</div><div class="ss">'+(s.sharpe>=2?'Excellent':s.sharpe>=1?'Good':s.sharpe>=0.5?'Fair':'Poor')+'</div></div>'
+      +'<div class="st"><div class="sl">Shadow Win%</div><div class="sv" style="color:'+wrCol+';font-size:14px">'+(s.winRate||0)+'%</div><div class="ss">'+(ss.wins||0)+'W / '+(ss.losses||0)+'L</div></div>'
+      +'<div class="st"><div class="sl">Avg Return</div><div class="sv '+(s.mean>=0?'up':'dn')+'" style="font-size:14px">'+(s.mean>=0?'+':'')+s.mean+'%</div><div class="ss">per signal</div></div>'
+      +'<div class="st"><div class="sl">Signals</div><div class="sv" style="font-size:14px">'+s.trades+'</div><div class="ss">'+(ss.active||0)+' active</div></div>'
+      +'</div>'
+      +(s.trades<10?'<div style="margin-top:6px;font-size:9px;color:var(--t3)">Need '+(10-s.trades)+' more signals for reliable Sharpe</div>':'');
   }
 
   // News mini
