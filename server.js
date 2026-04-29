@@ -480,22 +480,28 @@ function detectRegime(a){
 }
 
 // ═══ FEATURE 3: MONTE CARLO SIMULATION ═══
-function monteCarloSim(price,slDist,tpDist,side,atr,numSims=200,steps=20){
-  // Uses real ATR-based volatility to simulate forward price paths
-  // Each step = ~15 minutes (one candle)
-  const volPerStep=atr/price; // fractional move per candle
+function monteCarloSim(price,slDist,tpDist,side,atr,trendBias=0,numSims=200,steps=20){
+  // trendBias: -1 (strong bearish) to +1 (strong bullish)
+  // Converts to per-step drift so simulations respect the trend
+  const volPerStep=atr/price*0.5; // half ATR per step (ATR = full range, we want std dev)
   let tpHits=0,slHits=0,noHits=0;
   let totalReturn=0,worstReturn=0;
   const sl=side==='buy'?price-slDist:price+slDist;
   const tp=side==='buy'?price+tpDist:price-tpDist;
 
+  // Drift per step: trend-aligned trades get favorable drift
+  // If buying in uptrend (trendBias=+0.5), drift is positive
+  // If selling in downtrend (trendBias=-0.5), flip for sell so drift is also favorable
+  const rawDrift=side==='buy'?trendBias:-trendBias;
+  const driftPerStep=rawDrift*volPerStep*0.3; // 30% of vol as max drift
+
   for(let i=0;i<numSims;i++){
     let p=price;
     let hitTP=false,hitSL=false;
     for(let s=0;s<steps;s++){
-      // Random walk with slight drift based on trend
-      const drift=0; // neutral — let volatility decide
-      const move=drift+(Math.random()-0.5)*2*volPerStep;
+      // Normal-ish distribution: sum of 3 uniforms ≈ normal
+      const r=(Math.random()+Math.random()+Math.random()-1.5)/1.5;
+      const move=driftPerStep+r*volPerStep;
       p=p*(1+move);
       if(side==='buy'){
         if(p<=sl){hitSL=true;break}
@@ -758,7 +764,7 @@ setInterval(()=>{saveSettings();saveState()},30000);
 // News refreshes independently of bot state - every 5 min
 setInterval(()=>{fetchNews().catch(e=>console.log('News refresh err:',e.message))},300000);
 // Also fetch on startup after 5 seconds
-setTimeout(()=>{fetchNews().catch(e=>console.log('Initial news err:',e.message));getSentiment().catch(e=>console.log('Initial sentiment err:',e.message));syncKuCoinPositions().catch(e=>console.log('Initial sync err:',e.message))},5000);
+setTimeout(()=>{fetchNews().catch(e=>console.log('Initial news err:',e.message));getSentiment().catch(e=>console.log('Initial sentiment err:',e.message));syncKuCoinPositions().catch(e=>console.log('Initial sync err:',e.message));fetchLiveBalance().then(bal=>autoTuneForBalance(bal||bot.paperUSD)).catch(()=>autoTuneForBalance(bot.paperUSD))},5000);
 
 function botLog(m){const e={time:new Date().toISOString(),msg:m};bot.log.push(e);if(bot.log.length>500)bot.log.shift();console.log('[BOT]',m)}
 
@@ -807,6 +813,9 @@ async function closeTrade(t,price,reason){
   t.pnlPct=((t.exitPrice-t.entryPrice)/t.entryPrice*100*dir*(t.type==='futures'?t.leverage:1));
   if(!t.isLive)bot.paperUSD+=t.margin+t.pnl;
   bot.totalPnL+=t.pnl;t.pnl>0?bot.winCount++:bot.lossCount++;
+
+  // Supervisor: track performance
+  supervisorOnTradeClose(t);
 
   // Track daily PnL
   const today=new Date().toISOString().slice(0,10);
@@ -1023,6 +1032,181 @@ async function multiTimeframeAnalysis(sym){
 
 // ═══ BOT TICK ═══
 let tickIndex=0;
+// ═══ SUPERVISOR BOT — monitors performance, adjusts risk, changes settings ═══
+const supervisor={
+  consecutiveLosses:0,consecutiveWins:0,recentTrades:[],agentAccuracy:{},
+  circuitBroken:false,circuitBreakUntil:0,adjustments:[],
+  originalSettings:null,
+  mode:'normal' // normal, cautious, aggressive, recovery
+};
+
+function supervisorSaveOriginal(){
+  if(!supervisor.originalSettings){
+    supervisor.originalSettings={leverage:bot.leverage,riskPct:bot.riskPct,slATR:bot.slATR,tpATR:bot.tpATR,requiredAgents:bot.requiredAgents,maxOpenTrades:bot.maxOpenTrades};
+  }
+}
+
+// ═══ AUTO-TUNE SETTINGS BASED ON PORTFOLIO SIZE ═══
+let lastAutoTuneBal=0;
+function autoTuneForBalance(bal){
+  if(!bal||bal<=0)return;
+  // Only re-tune if balance changed significantly (>15%)
+  if(lastAutoTuneBal>0&&Math.abs(bal-lastAutoTuneBal)/lastAutoTuneBal<0.15)return;
+  lastAutoTuneBal=bal;
+
+  let tier,settings;
+
+  if(bal<10){
+    tier='MICRO (<$10)';
+    settings={leverage:2,riskPct:2,slATR:2.5,tpATR:5.0,maxOpenTrades:1,requiredAgents:5,smallBalanceMode:'on'};
+  }else if(bal<25){
+    tier='TINY ($10-25)';
+    settings={leverage:3,riskPct:3,slATR:2.0,tpATR:4.0,maxOpenTrades:2,requiredAgents:5,smallBalanceMode:'on'};
+  }else if(bal<50){
+    tier='SMALL ($25-50)';
+    settings={leverage:3,riskPct:3,slATR:2.0,tpATR:4.0,maxOpenTrades:2,requiredAgents:4,smallBalanceMode:'on'};
+  }else if(bal<100){
+    tier='STARTER ($50-100)';
+    settings={leverage:5,riskPct:2.5,slATR:1.5,tpATR:3.5,maxOpenTrades:3,requiredAgents:4,smallBalanceMode:'auto'};
+  }else if(bal<500){
+    tier='GROWING ($100-500)';
+    settings={leverage:5,riskPct:2,slATR:1.5,tpATR:3.0,maxOpenTrades:5,requiredAgents:4,smallBalanceMode:'off'};
+  }else if(bal<1000){
+    tier='MODERATE ($500-1K)';
+    settings={leverage:3,riskPct:1.5,slATR:1.5,tpATR:3.0,maxOpenTrades:7,requiredAgents:4,smallBalanceMode:'off'};
+  }else{
+    tier='STANDARD ($1K+)';
+    settings={leverage:3,riskPct:1,slATR:1.5,tpATR:3.0,maxOpenTrades:10,requiredAgents:4,smallBalanceMode:'off'};
+  }
+
+  let changed=false;
+  for(const[key,val] of Object.entries(settings)){
+    if(bot[key]!==val){
+      bot[key]=val;
+      changed=true;
+    }
+  }
+
+  if(changed){
+    botLog(`📊 AUTO-TUNE: Balance $${bal.toFixed(2)} → ${tier} | lev:${settings.leverage}x risk:${settings.riskPct}% SL:${settings.slATR} TP:${settings.tpATR} max:${settings.maxOpenTrades} agents:${settings.requiredAgents}`);
+    // Update supervisor's original settings to match new tier
+    supervisor.originalSettings={leverage:settings.leverage,riskPct:settings.riskPct,slATR:settings.slATR,tpATR:settings.tpATR,requiredAgents:settings.requiredAgents,maxOpenTrades:settings.maxOpenTrades};
+    saveSettings();
+  }
+}
+
+function supervisorAdjust(param,newVal,reason){
+  const old=bot[param];if(old===newVal)return;
+  bot[param]=newVal;
+  const adj=param+': '+old+' -> '+newVal+' — '+reason;
+  supervisor.adjustments.push({time:Date.now(),action:adj,param,from:old,to:newVal});
+  if(supervisor.adjustments.length>50)supervisor.adjustments=supervisor.adjustments.slice(-50);
+  botLog('🔧 SUPERVISOR '+adj);
+  saveSettings();
+}
+
+function supervisorOnTradeClose(trade){
+  supervisorSaveOriginal();
+  const isWin=trade.pnl>0;
+  if(isWin){supervisor.consecutiveWins++;supervisor.consecutiveLosses=0}
+  else{supervisor.consecutiveLosses++;supervisor.consecutiveWins=0}
+
+  supervisor.recentTrades.push({symbol:trade.symbol,side:trade.side,pnl:trade.pnl,pnlPct:trade.pnlPct,result:trade.reason,time:Date.now(),isWin});
+  if(supervisor.recentTrades.length>20)supervisor.recentTrades.shift();
+
+  const orig=supervisor.originalSettings||{};
+
+  // 2 LOSSES: go cautious
+  if(supervisor.consecutiveLosses===2){
+    supervisor.mode='cautious';
+    supervisorAdjust('leverage',Math.max(1,Math.floor((orig.leverage||5)*0.6)),'2 losses — reducing leverage');
+    supervisorAdjust('slATR',Math.min(bot.slATR+0.5,(orig.slATR||2)*1.5),'wider stops to survive volatility');
+    supervisorAdjust('riskPct',Math.max(0.5,+(bot.riskPct*0.7).toFixed(1)),'reducing risk per trade');
+  }
+
+  // 3 LOSSES: circuit breaker + max safety
+  if(supervisor.consecutiveLosses>=3&&!supervisor.circuitBroken){
+    supervisor.circuitBroken=true;
+    supervisor.circuitBreakUntil=Date.now()+15*60*1000;
+    supervisor.mode='recovery';
+    supervisorAdjust('leverage',Math.max(1,Math.floor((orig.leverage||5)*0.5)),'circuit breaker');
+    supervisorAdjust('maxOpenTrades',1,'circuit breaker — 1 trade only');
+    supervisorAdjust('requiredAgents',Math.min(6,(orig.requiredAgents||4)+1),'circuit breaker — stricter');
+    botLog('🛑 SUPERVISOR CIRCUIT BREAKER: 3 losses. Pausing 15min. Lev:'+bot.leverage+'x MaxTrades:1 Agents:'+bot.requiredAgents);
+  }
+
+  // 3 WINS after cautious/recovery: restore toward original
+  if(supervisor.consecutiveWins===3&&supervisor.mode!=='normal'){
+    supervisor.mode='normal';
+    supervisorAdjust('leverage',Math.min(bot.leverage+1,orig.leverage||5),'3 wins — restoring leverage');
+    supervisorAdjust('riskPct',Math.min(+(bot.riskPct*1.3).toFixed(1),orig.riskPct||2),'3 wins — restoring risk');
+    supervisorAdjust('slATR',Math.max(+(bot.slATR-0.3).toFixed(1),orig.slATR||2),'3 wins — tightening SL back');
+    supervisorAdjust('requiredAgents',Math.max(bot.requiredAgents-1,orig.requiredAgents||4),'3 wins — restoring threshold');
+    supervisorAdjust('maxOpenTrades',Math.min(bot.maxOpenTrades+1,orig.maxOpenTrades||3),'3 wins — more slots');
+    botLog('🟢 SUPERVISOR: 3 wins — restoring to normal settings');
+  }
+
+  // 5 WINS: can push toward original ceiling
+  if(supervisor.consecutiveWins>=5){
+    if(bot.leverage<(orig.leverage||5))supervisorAdjust('leverage',Math.min(bot.leverage+1,orig.leverage||5),'hot streak');
+    botLog('🟢 SUPERVISOR: '+supervisor.consecutiveWins+' win streak!');
+  }
+
+  // AGENT ACCURACY
+  if(trade.councilVotes){
+    const correctSide=isWin?trade.side:(trade.side==='buy'?'sell':'buy');
+    for(const[agent,vote] of Object.entries(trade.councilVotes)){
+      if(!supervisor.agentAccuracy[agent])supervisor.agentAccuracy[agent]={correct:0,wrong:0,total:0};
+      supervisor.agentAccuracy[agent].total++;
+      if(vote.vote===correctSide)supervisor.agentAccuracy[agent].correct++;
+      else if(vote.vote!=='hold')supervisor.agentAccuracy[agent].wrong++;
+    }
+  }
+
+  // WIN RATE CHECK every 5 trades
+  if(supervisor.recentTrades.length>=10&&supervisor.recentTrades.length%5===0){
+    const recent=supervisor.recentTrades.slice(-10);
+    const wr=recent.filter(t=>t.isWin).length/recent.length;
+    if(wr<0.3&&supervisor.mode!=='recovery'){
+      supervisor.mode='cautious';
+      supervisorAdjust('leverage',Math.max(1,bot.leverage-1),'win rate '+Math.round(wr*100)+'%');
+      supervisorAdjust('riskPct',Math.max(0.5,+(bot.riskPct*0.8).toFixed(1)),'poor win rate');
+      botLog('⚠ SUPERVISOR: Win rate '+Math.round(wr*100)+'% — cutting risk');
+    }else if(wr>=0.6&&supervisor.mode==='cautious'){
+      supervisor.mode='normal';
+      botLog('🟢 SUPERVISOR: Win rate '+Math.round(wr*100)+'% — back to normal');
+    }
+  }
+}
+
+function supervisorCheck(){
+  if(supervisor.circuitBroken){
+    if(Date.now()>=supervisor.circuitBreakUntil){
+      supervisor.circuitBroken=false;
+      supervisor.mode='cautious';
+      botLog('🟢 SUPERVISOR: Circuit breaker released — cautious mode');
+      supervisor.adjustments.push({time:Date.now(),action:'Circuit breaker released'});
+    }
+    return{canTrade:false,reason:'🛑 Circuit breaker — '+Math.round((supervisor.circuitBreakUntil-Date.now())/60000)+'min left'};
+  }
+  const recent=supervisor.recentTrades.slice(-10);
+  if(recent.length>=5){
+    const wr=recent.filter(t=>t.isWin).length/recent.length;
+    if(wr<0.2)return{canTrade:true,reason:'⚠ win rate '+Math.round(wr*100)+'%',riskReduction:0.5};
+  }
+  return{canTrade:true,reason:'✅ '+supervisor.mode,riskReduction:supervisor.mode==='cautious'?0.7:supervisor.mode==='recovery'?0.5:1.0};
+}
+
+function getAgentReport(){
+  const report={};
+  for(const[agent,stats] of Object.entries(supervisor.agentAccuracy)){
+    const accuracy=stats.total>0?Math.round(stats.correct/stats.total*100):0;
+    const rating=accuracy>=60?'reliable':accuracy>=45?'average':'underperforming';
+    report[agent]={accuracy,correct:stats.correct,wrong:stats.wrong,total:stats.total,rating};
+  }
+  return report;
+}
+
 let tickCount=0;
 async function tick(){
   tickCount++;
@@ -1032,6 +1216,9 @@ async function tick(){
     if(bot.mode==='live'&&bot.credentials){try{await fetchLiveBalance()}catch(e){botLog('Balance fetch err: '+e.message)}}
     // Sync real positions from KuCoin (fixes margin display, recovers after redeploy)
     if(bot.mode==='live')await syncKuCoinPositions().catch(()=>{});
+
+    // Auto-tune settings based on current portfolio size
+    autoTuneForBalance(getCurBal());
 
     // ALWAYS fetch BTC first so altcoin agents know BTC's state
     try{
@@ -1079,6 +1266,13 @@ async function tick(){
           if(t.side==='sell'&&price>=t.sl){closeTrade(t,price,'stop_loss');continue}
           if(t.side==='buy'&&price>=t.tp){closeTrade(t,price,'take_profit');continue}
           if(t.side==='sell'&&price<=t.tp){closeTrade(t,price,'take_profit');continue}
+        }
+
+        // ═══ SUPERVISOR CHECK ═══
+        const supCheck=supervisorCheck();
+        if(!supCheck.canTrade){
+          if(sym===batch[0])botLog('🛑 '+supCheck.reason);
+          continue;
         }
 
         // Drawdown
@@ -1137,10 +1331,21 @@ async function tick(){
         // ═══ MONTE CARLO SIMULATION ═══
         const slDist=atr*bot.slATR;
         const tpDist=atr*bot.tpATR;
-        const mc=monteCarloSim(price,slDist,tpDist,council.decision,atr);
+        // Calculate trend bias from condition: -1 (strong bear) to +1 (strong bull)
+        let trendBias=0;
+        if(a.condition==='strong_bullish')trendBias=0.7;
+        else if(a.condition==='bullish')trendBias=0.4;
+        else if(a.condition==='mildly_bullish')trendBias=0.2;
+        else if(a.condition==='strong_bearish')trendBias=-0.7;
+        else if(a.condition==='bearish')trendBias=-0.4;
+        else if(a.condition==='mildly_bearish')trendBias=-0.2;
+        // HTF alignment boosts bias
+        const htf=a.htf||{};
+        if(htf.bias&&htf.bias.includes('strong_bullish'))trendBias=Math.min(1,trendBias+0.3);
+        else if(htf.bias&&htf.bias.includes('strong_bearish'))trendBias=Math.max(-1,trendBias-0.3);
+        const mc=monteCarloSim(price,slDist,tpDist,council.decision,atr,trendBias);
 
         // ═══ TP PROBABILITY (hybrid: rule-based + Monte Carlo) ═══
-        const htf=a.htf||{};
         const htfAligned=(council.decision==='buy'&&htf.bias&&htf.bias.includes('bullish'))||
                          (council.decision==='sell'&&htf.bias&&htf.bias.includes('bearish'));
         const htfStrong=htf.bias&&htf.bias.includes('strong');
@@ -1157,8 +1362,8 @@ async function tick(){
           if(btcAgrees)tpProb+=10;
           if(!btcAgrees&&!a.btc.condition.includes('neutral'))tpProb-=15;
         }
-        // Blend with Monte Carlo (60% rule-based, 40% MC)
-        tpProb=Math.round(tpProb*0.6+mc.tpProb*0.4);
+        // Blend with Monte Carlo (70% rule-based, 30% MC)
+        tpProb=Math.round(tpProb*0.7+mc.tpProb*0.3);
 
         if(tpProb<tpProbThreshold){
           botLog(`${coin} SKIP: TP ${tpProb}% < ${tpProbThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${dailyTargetHit?' 🎯':''}`);
@@ -1262,7 +1467,7 @@ async function tick(){
         }
 
         // Apply quant grade size multiplier (A+=100%, A=80%, B=60%, C=40%)
-        posUSD=Math.round(posUSD*qg.sizeMultiplier*100)/100;
+        posUSD=Math.round(posUSD*qg.sizeMultiplier*(supCheck.riskReduction||1.0)*100)/100;
         if(posUSD<minSize){
           botLog(`${coin} SKIP: grade ${qg.grade} reduced pos to $${posUSD.toFixed(2)} < min $${minSize}`);
           continue;
@@ -1542,6 +1747,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     // Top opportunities — ranked by council score
     opportunities:Object.entries(bot.lastCouncil).map(([sym,c])=>({symbol:sym.replace('-USDT',''),decision:c.decision,confidence:c.confidence,buyScore:c.buyScore,sellScore:c.sellScore,score:Math.max(c.buyScore||0,c.sellScore||0),htf:c.htf||'?'})).sort((a,b)=>b.score-a.score).slice(0,10),
     sharpe:getSharpe(),
+    supervisor:{circuitBroken:supervisor.circuitBroken,mode:supervisor.mode,consecutiveLosses:supervisor.consecutiveLosses,consecutiveWins:supervisor.consecutiveWins,recentWinRate:supervisor.recentTrades.length>=5?Math.round(supervisor.recentTrades.slice(-10).filter(t=>t.isWin).length/Math.min(supervisor.recentTrades.length,10)*100):null,agentReport:getAgentReport(),recentAdjustments:supervisor.adjustments.slice(-5),autoTuneBal:lastAutoTuneBal},
     shadowStats:{active:shadowTrades.active.length,history:shadowTrades.history.length,wins:shadowTrades.stats.wins,losses:shadowTrades.stats.losses},
     // Market regime
     regime:{
@@ -1587,6 +1793,34 @@ app.post('/api/bot/settings',mw,async(req,res)=>{
 app.get('/api/bot/analysis/:sym',mw,async(req,res)=>{
   try{const a=await multiTimeframeAnalysis(req.params.sym);const council=councilVote(a,bot.requiredAgents);res.json({success:true,analysis:a,council})}catch(e){res.status(500).json({error:e.message})}
 });
+// Full quant analysis for a single coin
+app.get('/api/bot/quant/:sym',mw,async(req,res)=>{
+  const sym=req.params.sym;
+  try{
+    const c15=await fetchKlines(sym,'15min',100);
+    const a=await analyze(c15,sym);
+    const council=councilVote(a,bot.requiredAgents);
+    const regime=detectRegime(a);
+    const slDist=a.atr*bot.slATR;const tpDist=a.atr*bot.tpATR;
+    let trendBias=0;
+    if(a.condition==='strong_bullish')trendBias=0.7;
+    else if(a.condition==='bullish')trendBias=0.4;
+    else if(a.condition==='mildly_bullish')trendBias=0.2;
+    else if(a.condition==='strong_bearish')trendBias=-0.7;
+    else if(a.condition==='bearish')trendBias=-0.4;
+    else if(a.condition==='mildly_bearish')trendBias=-0.2;
+    const mc=monteCarloSim(a.price,slDist,tpDist,council.decision!=='hold'?council.decision:'buy',a.atr,trendBias);
+    const qg=quantGrade(council,mc.tpProb,regime,mc,a.btc);
+    const sharpe=getSharpe();
+    res.json({success:true,symbol:sym,price:a.price,condition:a.condition,rsi:a.rsi,atr:a.atr,
+      council:{decision:council.decision,confidence:council.confidence,buyCount:council.buyCount,sellCount:council.sellCount,buyScore:council.buyScore,sellScore:council.sellScore,votes:council.votes},
+      regime,monteCarlo:mc,quantGrade:qg,sharpe,
+      levels:{sl:council.decision==='buy'?a.price-slDist:a.price+slDist,tp:council.decision==='buy'?a.price+tpDist:a.price-tpDist,slDist,tpDist,rrRatio:Math.round(tpDist/slDist*10)/10},
+      btc:a.btc||null
+    });
+  }catch(e){res.json({success:false,error:e.message})}
+});
+
 app.get('/api/bot/news',mw,async(req,res)=>{try{const n=await fetchNews();const s=await getSentiment();res.json({success:true,articles:n.articles,coinSentiment:n.sentiment,overall:n.overall,fearGreed:s})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/bot/backtest',mw,async(req,res)=>{try{const{symbol='BTC-USDT',requiredAgents=4,periods=500}=req.body||{};res.json({success:true,result:await backtest(symbol,requiredAgents,periods)})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/bot/close/:id',mw,(req,res)=>{const t=bot.openTrades.find(x=>x.id===req.params.id);if(!t)return res.status(404).json({error:'Not found'});closeTrade(t,bot.lastAnalysis[t.symbol]?.price||t.entryPrice,'manual');res.json({success:true})});
@@ -1675,6 +1909,21 @@ app.get('/debug',(req,res)=>{
   h+='</pre><h2>QUANT STATS (Shadow Trading)</h2><pre>';
   h+='sharpe: '+(sharpe.sharpe>=1.5?'<span class="ok">':'<span class="warn">')+sharpe.sharpe+'</span> | winRate: '+sharpe.winRate+'% | avgReturn: '+sharpe.mean+'% | signals: '+sharpe.trades+'\n';
   h+='shadow active: '+shadowTrades.active.length+' | resolved: '+shadowTrades.history.length+' | W:'+shadowTrades.stats.wins+' L:'+shadowTrades.stats.losses+'\n';
+  h+='</pre><h2>SUPERVISOR</h2><pre>';
+  h+='circuit breaker: '+(supervisor.circuitBroken?'<span class="bad">ACTIVE — '+(Math.round((supervisor.circuitBreakUntil-Date.now())/60000))+'min left</span>':'<span class="ok">OFF</span>')+'\n';
+  h+='consecutive: W:'+supervisor.consecutiveWins+' L:'+supervisor.consecutiveLosses+'\n';
+  const ar=getAgentReport();
+  if(Object.keys(ar).length){
+    h+='agent accuracy:\n';
+    for(const[name,s] of Object.entries(ar)){
+      const col=s.rating==='reliable'?'ok':s.rating==='average'?'warn':'bad';
+      h+='  '+name.padEnd(18)+' <span class="'+col+'">'+s.accuracy+'%</span> ('+s.correct+'/'+s.total+') '+s.rating+'\n';
+    }
+  }else h+='agent accuracy: no data yet\n';
+  if(supervisor.adjustments.length){
+    h+='recent adjustments:\n';
+    for(const a of supervisor.adjustments.slice(-5))h+='  '+new Date(a.time).toLocaleTimeString()+' '+a.action+'\n';
+  }
   h+='</pre>';
   h+='<h2>NEWS CACHE</h2><pre>';
   h+='articles: '+(newsCache.articles?.length||0)+'\n';
