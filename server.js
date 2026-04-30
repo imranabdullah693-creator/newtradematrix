@@ -1310,6 +1310,13 @@ async function tick(){
         }
 
         if(council.decision==='hold')continue;
+
+        // Shadow record EVERY buy/sell signal (even if we skip it) — builds Sharpe data
+        const _slD=atr*bot.slATR,_tpD=atr*bot.tpATR;
+        const _sl=council.decision==='buy'?price-_slD:price+_slD;
+        const _tp=council.decision==='buy'?price+_tpD:price-_tpD;
+        shadowRecord(sym,council.decision,price,_sl,_tp,council.confidence,'signal');
+
         if(council.confidence<confThreshold){
           botLog(`${coin} ${council.decision} conf ${council.confidence}% < ${confThreshold}%${dailyTargetHit?' (raised after 🎯)':''}`);
           continue;
@@ -1809,14 +1816,29 @@ app.get('/api/bot/quant/:sym',mw,async(req,res)=>{
     else if(a.condition==='strong_bearish')trendBias=-0.7;
     else if(a.condition==='bearish')trendBias=-0.4;
     else if(a.condition==='mildly_bearish')trendBias=-0.2;
-    const mc=monteCarloSim(a.price,slDist,tpDist,council.decision!=='hold'?council.decision:'buy',a.atr,trendBias);
+    const side=council.decision!=='hold'?council.decision:'buy';
+    const mc=monteCarloSim(a.price,slDist,tpDist,side,a.atr,trendBias);
     const qg=quantGrade(council,mc.tpProb,regime,mc,a.btc);
     const sharpe=getSharpe();
-    res.json({success:true,symbol:sym,price:a.price,condition:a.condition,rsi:a.rsi,atr:a.atr,
-      council:{decision:council.decision,confidence:council.confidence,buyCount:council.buyCount,sellCount:council.sellCount,buyScore:council.buyScore,sellScore:council.sellScore,votes:council.votes},
+    const bbPos=a.bbUpper&&a.bbLower?Math.round((a.price-a.bbLower)/(a.bbUpper-a.bbLower)*100):null;
+    const atrPct=a.atr&&a.price?Math.round((a.atr/a.price)*10000)/100:null;
+    res.json({success:true,symbol:sym,price:a.price,condition:a.condition,trendStrength:a.trendStrength,
+      indicators:{
+        ema9:a.ema9,ema21:a.ema21,ema50:a.ema50,
+        rsi:a.rsi,prevRsi:a.prevRsi,
+        macdHist:a.macdHist,macdLine:a.macdLine,macdSignal:a.macdSignal,
+        bbUpper:a.bbUpper,bbLower:a.bbLower,bbSma:a.bbSma,bbPosition:bbPos,
+        atr:a.atr,atrPct,
+        adx:a.adx,diPlus:a.diPlus,diMinus:a.diMinus,
+        vwap:a.vwap,obvTrend:a.obvTrend,volTrend:a.volTrend,
+        support:a.support,resistance:a.resistance,inGoldenPocket:a.inGoldenPocket,
+        stochK:a.stochK,stochD:a.stochD
+      },
+      council:{decision:council.decision,confidence:council.confidence,buyCount:council.buyCount,sellCount:council.sellCount,buyScore:council.buyScore,sellScore:council.sellScore,weightThreshold:council.weightThreshold,votes:council.votes},
       regime,monteCarlo:mc,quantGrade:qg,sharpe,
-      levels:{sl:council.decision==='buy'?a.price-slDist:a.price+slDist,tp:council.decision==='buy'?a.price+tpDist:a.price-tpDist,slDist,tpDist,rrRatio:Math.round(tpDist/slDist*10)/10},
-      btc:a.btc||null
+      levels:{sl:side==='buy'?a.price-slDist:a.price+slDist,tp:side==='buy'?a.price+tpDist:a.price-tpDist,slDist,tpDist,rrRatio:Math.round(tpDist/slDist*10)/10},
+      btc:a.btc||null,
+      correlation:{group:getCorrelationGroup(sym),canTrade:checkCorrelation(sym,side)}
     });
   }catch(e){res.json({success:false,error:e.message})}
 });
