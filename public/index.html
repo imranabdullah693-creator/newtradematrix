@@ -403,38 +403,58 @@ async function doAnalysis(){
   box.innerHTML='<span style="color:var(--am)">Running full quant analysis...</span>';
   const d=await api('/api/bot/quant/'+sym);
   if(!d.success){box.innerHTML='<span style="color:var(--re)">'+(d.error||'Failed')+'</span>';return}
-
   const decCol=d.council.decision==='buy'?'var(--gr)':d.council.decision==='sell'?'var(--re)':'var(--am)';
-  const gradeCol=d.quantGrade.grade==='A+'?'var(--gr)':d.quantGrade.grade==='A'?'var(--gr)':d.quantGrade.grade==='B'?'var(--bl)':d.quantGrade.grade==='C'?'var(--am)':'var(--re)';
+  const gradeCol=d.quantGrade.grade==='A+'||d.quantGrade.grade==='A'?'var(--gr)':d.quantGrade.grade==='B'?'var(--bl)':d.quantGrade.grade==='C'?'var(--am)':'var(--re)';
   const regCol=d.regime.tradeable?'var(--gr)':'var(--re)';
-
-  let h='<div style="padding:12px;border-radius:6px;background:'+(d.council.decision==='buy'?'var(--gd)':d.council.decision==='sell'?'var(--rd)':'var(--bg3)')+';margin-bottom:12px;text-align:center">';
-  h+='<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:'+decCol+'">'+d.council.decision.toUpperCase()+'</div>';
-  h+='<div style="font-size:11px;color:var(--t2)">Grade: <span style="color:'+gradeCol+';font-weight:700">'+d.quantGrade.grade+'</span> ('+d.quantGrade.score+'/100) | Conf: '+d.council.confidence+'%</div></div>';
-
-  h+='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(100px,1fr));margin-bottom:12px">';
-  h+='<div class="st"><div class="sl">Price</div><div class="sv" style="font-size:13px">$'+fmtP(d.price)+'</div></div>';
-  h+='<div class="st"><div class="sl">RSI</div><div class="sv" style="font-size:13px">'+(d.rsi?d.rsi.toFixed(0):'—')+'</div></div>';
-  h+='<div class="st"><div class="sl">Regime</div><div class="sv" style="font-size:10px;color:'+regCol+'">'+d.regime.regime.replace(/_/g,' ')+'</div></div>';
-  h+='<div class="st"><div class="sl">R:R</div><div class="sv" style="font-size:13px">1:'+d.levels.rrRatio+'</div></div>';
-  h+='<div class="st"><div class="sl">MC TP%</div><div class="sv" style="font-size:13px;color:'+(d.monteCarlo.tpProb>=50?'var(--gr)':'var(--re)')+'">'+d.monteCarlo.tpProb+'%</div></div>';
-  h+='<div class="st"><div class="sl">Exp Return</div><div class="sv '+(d.monteCarlo.expectedReturn>=0?'up':'dn')+'" style="font-size:13px">'+(d.monteCarlo.expectedReturn>=0?'+':'')+d.monteCarlo.expectedReturn+'%</div></div>';
-  h+='</div>';
-
-  h+='<div style="display:flex;gap:12px;margin-bottom:12px;font-family:var(--mono);font-size:10px">';
-  h+='<span style="color:var(--gr)">SL: $'+fmtP(d.levels.sl)+'</span>';
+  const ind=d.indicators||{};
+  let h='<div style="padding:14px;border-radius:8px;background:'+(d.council.decision==='buy'?'var(--gd)':d.council.decision==='sell'?'var(--rd)':'var(--bg3)')+';margin-bottom:14px;text-align:center">';
+  h+='<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+decCol+'">'+d.council.decision.toUpperCase()+'</div>';
+  h+='<div style="font-size:11px;color:var(--t2);margin-top:4px">Grade: <span style="color:'+gradeCol+';font-weight:700">'+d.quantGrade.grade+'</span> ('+d.quantGrade.score+'/100) | Conf: '+d.council.confidence+'% | Regime: <span style="color:'+regCol+'">'+d.regime.regime.replace(/_/g,' ')+'</span></div></div>';
+  h+='<div style="display:flex;justify-content:space-between;padding:8px 12px;background:var(--bg2);border-radius:6px;margin-bottom:14px;font-family:var(--mono);font-size:11px">';
+  h+='<span style="color:var(--re)">SL: $'+fmtP(d.levels.sl)+'</span>';
   h+='<span style="color:var(--bl)">Entry: $'+fmtP(d.price)+'</span>';
-  h+='<span style="color:var(--am)">TP: $'+fmtP(d.levels.tp)+'</span>';
+  h+='<span style="color:var(--gr)">TP: $'+fmtP(d.levels.tp)+'</span>';
+  h+='<span style="color:var(--t2)">R:R 1:'+d.levels.rrRatio+'</span></div>';
+  h+='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(80px,1fr));margin-bottom:14px">';
+  h+='<div class="st"><div class="sl">MC TP%</div><div class="sv" style="font-size:13px;color:'+(d.monteCarlo.tpProb>=50?'var(--gr)':'var(--re)')+'">'+d.monteCarlo.tpProb+'%</div></div>';
+  h+='<div class="st"><div class="sl">MC SL%</div><div class="sv" style="font-size:13px;color:var(--re)">'+d.monteCarlo.slProb+'%</div></div>';
+  h+='<div class="st"><div class="sl">Exp Return</div><div class="sv '+(d.monteCarlo.expectedReturn>=0?'up':'dn')+'" style="font-size:13px">'+(d.monteCarlo.expectedReturn>=0?'+':'')+d.monteCarlo.expectedReturn+'%</div></div>';
+  h+='<div class="st"><div class="sl">Worst Case</div><div class="sv dn" style="font-size:13px">'+d.monteCarlo.worstCase+'%</div></div></div>';
+  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Trend</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
+  h+='<div class="st"><div class="sl">EMA 9</div><div class="sv" style="font-size:10px">$'+fmtP(ind.ema9)+'</div></div>';
+  h+='<div class="st"><div class="sl">EMA 21</div><div class="sv" style="font-size:10px">$'+fmtP(ind.ema21)+'</div></div>';
+  h+='<div class="st"><div class="sl">EMA 50</div><div class="sv" style="font-size:10px">$'+fmtP(ind.ema50)+'</div></div>';
+  h+='<div class="st"><div class="sl">ADX</div><div class="sv" style="font-size:11px">'+(ind.adx?ind.adx.toFixed(0):'—')+'</div><div class="ss">'+(ind.adx>25?'Strong':ind.adx>20?'Moderate':'Weak')+'</div></div>';
+  h+='<div class="st"><div class="sl">Condition</div><div class="sv" style="font-size:9px;color:'+(d.condition.includes('bullish')?'var(--gr)':d.condition.includes('bearish')?'var(--re)':'var(--am)')+'">'+d.condition.replace(/_/g,' ')+'</div></div></div></div>';
+  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Momentum</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
+  h+='<div class="st"><div class="sl">RSI</div><div class="sv" style="font-size:13px;color:'+(ind.rsi>70?'var(--re)':ind.rsi<30?'var(--gr)':'var(--t1)')+'">'+(ind.rsi?ind.rsi.toFixed(1):'—')+'</div><div class="ss">'+(ind.rsi>70?'Overbought':ind.rsi<30?'Oversold':'Neutral')+'</div></div>';
+  h+='<div class="st"><div class="sl">MACD</div><div class="sv" style="font-size:10px;color:'+(ind.macdHist>0?'var(--gr)':'var(--re)')+'">'+(ind.macdHist?ind.macdHist.toFixed(4):'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">Stoch K/D</div><div class="sv" style="font-size:10px">'+(ind.stochK?ind.stochK.toFixed(0):'—')+'/'+(ind.stochD?ind.stochD.toFixed(0):'—')+'</div></div></div></div>';
+  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Volatility</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
+  h+='<div class="st"><div class="sl">ATR</div><div class="sv" style="font-size:10px">$'+(ind.atr?ind.atr.toFixed(4):'—')+'</div><div class="ss">'+(ind.atrPct?ind.atrPct.toFixed(2)+'%':'')+'</div></div>';
+  h+='<div class="st"><div class="sl">BB Upper</div><div class="sv" style="font-size:10px">$'+fmtP(ind.bbUpper)+'</div></div>';
+  h+='<div class="st"><div class="sl">BB Lower</div><div class="sv" style="font-size:10px">$'+fmtP(ind.bbLower)+'</div></div>';
+  h+='<div class="st"><div class="sl">BB Pos</div><div class="sv" style="font-size:13px;color:'+(ind.bbPosition>80?'var(--re)':ind.bbPosition<20?'var(--gr)':'var(--t1)')+'">'+(ind.bbPosition!==null?ind.bbPosition+'%':'—')+'</div></div></div></div>';
+  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Volume & Levels</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
+  h+='<div class="st"><div class="sl">VWAP</div><div class="sv" style="font-size:10px">$'+fmtP(ind.vwap)+'</div><div class="ss">'+(d.price>ind.vwap?'Above':'Below')+'</div></div>';
+  h+='<div class="st"><div class="sl">OBV</div><div class="sv" style="font-size:10px;color:'+(ind.obvTrend==='bullish'?'var(--gr)':'var(--re)')+'">'+(ind.obvTrend||'—').toUpperCase()+'</div></div>';
+  h+='<div class="st"><div class="sl">Support</div><div class="sv" style="font-size:10px;color:var(--gr)">$'+fmtP(ind.support)+'</div></div>';
+  h+='<div class="st"><div class="sl">Resistance</div><div class="sv" style="font-size:10px;color:var(--re)">$'+fmtP(ind.resistance)+'</div></div>';
+  if(ind.inGoldenPocket)h+='<div class="st" style="border:1px solid var(--am)"><div class="sl" style="color:var(--am)">Golden Pocket</div><div class="sv" style="font-size:11px;color:var(--am)">ACTIVE</div></div>';
+  h+='</div></div>';
+  h+='<div style="font-size:10px;color:var(--t2);margin-bottom:6px;line-height:1.6">';
+  h+='<strong>MC:</strong> '+d.monteCarlo.sims+' sims | '+d.monteCarlo.tpProb+'% TP / '+d.monteCarlo.slProb+'% SL / '+d.monteCarlo.noHitPct+'% timeout<br/>';
+  h+='<strong>Regime:</strong> '+d.regime.reason+'<br/>';
+  if(d.correlation)h+='<strong>Correlation:</strong> '+d.correlation.group+' '+(d.correlation.canTrade?'✅':'❌ blocked')+'<br/>';
+  if(d.btc)h+='<strong>BTC:</strong> '+d.btc.condition+' RSI:'+(d.btc.rsi?d.btc.rsi.toFixed(0):'?')+' 1h:'+(d.btc.priceChange1h>=0?'+':'')+d.btc.priceChange1h?.toFixed(2)+'%<br/>';
+  if(d.sharpe)h+='<strong>Sharpe:</strong> '+d.sharpe.sharpe+' ('+d.sharpe.trades+' signals)<br/>';
   h+='</div>';
-
-  h+='<div style="font-size:10px;color:var(--t2);margin-bottom:8px"><strong>Monte Carlo:</strong> '+d.monteCarlo.sims+' simulations → '+d.monteCarlo.tpProb+'% hit TP, '+d.monteCarlo.slProb+'% hit SL, worst case: '+d.monteCarlo.worstCase+'%</div>';
-  h+='<div style="font-size:10px;color:var(--t2);margin-bottom:8px"><strong>Regime:</strong> '+d.regime.reason+'</div>';
-  if(d.btc)h+='<div style="font-size:10px;color:var(--t2);margin-bottom:8px"><strong>BTC:</strong> '+d.btc.condition+' | RSI:'+d.btc.rsi?.toFixed(0)+' | 1h: '+(d.btc.priceChange1h>=0?'+':'')+d.btc.priceChange1h?.toFixed(2)+'%</div>';
-
-  h+='<div style="font-size:9px;color:var(--t3);margin-top:8px">Agent votes:</div><div style="display:flex;flex-direction:column;gap:3px;margin-top:4px">';
+  h+='<div class="cd" style="padding:10px"><div class="ct">Agent Votes ('+d.council.buyCount+'buy/'+d.council.sellCount+'sell | need '+d.council.weightThreshold+'pts)</div>';
   for(const[name,v] of Object.entries(d.council.votes||{})){
     const vc=v.vote==='buy'?'var(--gr)':v.vote==='sell'?'var(--re)':'var(--t3)';
-    h+='<div style="display:flex;align-items:center;gap:6px;font-size:9px"><span style="color:var(--t2);min-width:85px">'+name.replace(/_/g,' ')+'</span><span style="color:'+vc+';font-family:var(--mono);font-weight:600;min-width:35px">'+v.vote.toUpperCase()+'</span><span style="color:var(--t3);font-size:8px">'+v.confidence+'% — '+(v.reason||'').slice(0,80)+'</span></div>';
+    const cls=v.vote==='buy'?'buy':v.vote==='sell'?'sell':'hold';
+    h+='<div class="agent '+cls+'" style="margin-bottom:4px"><span class="agent-name">'+name.replace(/_/g,' ')+'</span><span class="agent-vote" style="color:'+vc+'">'+v.vote.toUpperCase()+' '+v.confidence+'%</span><div class="conf-bar"><div class="conf-fill" style="width:'+v.confidence+'%;background:'+vc+'"></div></div></div>';
+    if(v.reason)h+='<div style="font-size:8px;color:var(--t3);margin:-2px 0 4px 12px;line-height:1.4">'+v.reason+'</div>';
   }
   h+='</div>';
   box.innerHTML=h;
