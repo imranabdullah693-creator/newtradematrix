@@ -40,7 +40,7 @@ let sentimentCache={value:50,label:'Neutral',updated:0};
 let newsCache={articles:[],sentiment:{},overall:{score:0,bias:'neutral'},updated:0};
 const BULL=['surge','rally','bullish','breakout','soar','pump','ath','gain','rise','jump','adoption','approval','etf','institutional','upgrade','partnership','launch','record','optimistic','growth','recovery','accumulate'];
 const BEAR=['crash','dump','bearish','plunge','drop','fall','hack','ban','fraud','scam','regulation','crackdown','lawsuit','fine','risk','warning','decline','panic','correction','collapse','bankrupt','shutdown'];
-const COINS_MAP={BTC:'bitcoin',ETH:'ethereum',SOL:'solana',XRP:'ripple',ADA:'cardano',DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',AVAX:'avalanche',BNB:'binance',SHIB:'shiba',UNI:'uniswap',ATOM:'cosmos',LTC:'litecoin',FIL:'filecoin',NEAR:'near',APT:'aptos',ARB:'arbitrum',OP:'optimism',SUI:'sui',SEI:'sei',INJ:'injective',FET:'fetch',RENDER:'render',PEPE:'pepe',WIF:'dogwifhat',BONK:'bonk',FLOKI:'floki',TIA:'celestia',AAVE:'aave',XLM:'stellar',HBAR:'hedera',VET:'vechain',FTM:'fantom',GRT:'graph',STX:'stacks',IMX:'immutable',JASMY:'jasmy',EOS:'eos',ALGO:'algorand',SAND:'sandbox',MANA:'decentraland',CRV:'curve',ONDO:'ondo',JUP:'jupiter',PENDLE:'pendle',KAS:'kaspa',RUNE:'thorchain',GALA:'gala',DYDX:'dydx'};
+const COINS_MAP={BTC:'bitcoin',ETH:'ethereum',SOL:'solana',XRP:'ripple',ADA:'cardano',DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',AVAX:'avalanche',BNB:'binance',SHIB:'shiba',UNI:'uniswap',ATOM:'cosmos',LTC:'litecoin',FIL:'filecoin',NEAR:'near',APT:'aptos',ARB:'arbitrum',OP:'optimism',SUI:'sui',SEI:'sei',INJ:'injective',FET:'fetch',RENDER:'render',PEPE:'pepe',WIF:'dogwifhat',BONK:'bonk',FLOKI:'floki',TIA:'celestia',AAVE:'aave',XLM:'stellar',HBAR:'hedera',VET:'vechain',GRT:'graph',STX:'stacks',IMX:'immutable',JASMY:'jasmy',ALGO:'algorand',SAND:'sandbox',MANA:'decentraland',CRV:'curve',ONDO:'ondo',JUP:'jupiter',PENDLE:'pendle',KAS:'kaspa',RUNE:'thorchain',DYDX:'dydx'};
 function scoreText(t){if(!t)return 0;const lo=t.toLowerCase();let s=0;for(const w of BULL)if(lo.includes(w))s++;for(const w of BEAR)if(lo.includes(w))s--;return s}
 
 async function getSentiment(){
@@ -423,10 +423,10 @@ const CORR_GROUPS={
   'ETH':['ETH-USDT'], // ETH semi-independent
   'ALT_HIGH':['SOL-USDT','AVAX-USDT','DOT-USDT','NEAR-USDT','APT-USDT','SUI-USDT','SEI-USDT','INJ-USDT','STX-USDT'], // L1 alts
   'ALT_MID':['LINK-USDT','UNI-USDT','ATOM-USDT','AAVE-USDT','RUNE-USDT','PENDLE-USDT','DYDX-USDT','CRV-USDT','GRT-USDT'], // DeFi
-  'ALT_LOW':['ADA-USDT','XRP-USDT','XLM-USDT','HBAR-USDT','VET-USDT','EOS-USDT','ALGO-USDT','LTC-USDT'], // Old L1s
+  'ALT_LOW':['ADA-USDT','XRP-USDT','XLM-USDT','HBAR-USDT','VET-USDT','ALGO-USDT','LTC-USDT'], // Old L1s
   'MEME':['DOGE-USDT','SHIB-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT'], // Meme coins move together
-  'AI_GAMING':['FET-USDT','RENDER-USDT','IMX-USDT','SAND-USDT','MANA-USDT','GALA-USDT','JASMY-USDT'], // AI/Gaming
-  'DEFI2':['FIL-USDT','ARB-USDT','OP-USDT','TIA-USDT','ONDO-USDT','JUP-USDT','FTM-USDT','KAS-USDT','BNB-USDT'] // L2/Infra
+  'AI_GAMING':['FET-USDT','RENDER-USDT','IMX-USDT','SAND-USDT','MANA-USDT','JASMY-USDT'], // AI/Gaming
+  'DEFI2':['FIL-USDT','ARB-USDT','OP-USDT','TIA-USDT','ONDO-USDT','JUP-USDT','KAS-USDT','BNB-USDT'] // L2/Infra
 };
 
 function getCorrelationGroup(sym){
@@ -480,26 +480,25 @@ function detectRegime(a){
 }
 
 // ═══ FEATURE 3: MONTE CARLO SIMULATION ═══
-function monteCarloSim(price,slDist,tpDist,side,atr,trendBias=0,numSims=200,steps=20){
-  // trendBias: -1 (strong bearish) to +1 (strong bullish)
-  // Converts to per-step drift so simulations respect the trend
-  const volPerStep=atr/price*0.5; // half ATR per step (ATR = full range, we want std dev)
+function monteCarloSim(price,slDist,tpDist,side,atr,trendBias=0,numSims=200){
+  const volPerStep=atr/price*0.5;
+  // Dynamic steps: price needs sqrt(N)*vol to travel distance D
+  // So N = (D/vol)^2. We need enough steps to reach TP
+  const tpFracDist=tpDist/price;
+  const stepsNeeded=Math.ceil((tpFracDist/volPerStep)**2);
+  const steps=Math.max(50,Math.min(300,stepsNeeded*2));
+
   let tpHits=0,slHits=0,noHits=0;
   let totalReturn=0,worstReturn=0;
   const sl=side==='buy'?price-slDist:price+slDist;
   const tp=side==='buy'?price+tpDist:price-tpDist;
-
-  // Drift per step: trend-aligned trades get favorable drift
-  // If buying in uptrend (trendBias=+0.5), drift is positive
-  // If selling in downtrend (trendBias=-0.5), flip for sell so drift is also favorable
   const rawDrift=side==='buy'?trendBias:-trendBias;
-  const driftPerStep=rawDrift*volPerStep*0.3; // 30% of vol as max drift
+  const driftPerStep=rawDrift*volPerStep*0.3;
 
   for(let i=0;i<numSims;i++){
     let p=price;
     let hitTP=false,hitSL=false;
     for(let s=0;s<steps;s++){
-      // Normal-ish distribution: sum of 3 uniforms ≈ normal
       const r=(Math.random()+Math.random()+Math.random()-1.5)/1.5;
       const move=driftPerStep+r*volPerStep;
       p=p*(1+move);
@@ -511,10 +510,9 @@ function monteCarloSim(price,slDist,tpDist,side,atr,trendBias=0,numSims=200,step
         if(p<=tp){hitTP=true;break}
       }
     }
-    if(hitTP){tpHits++;totalReturn+=(tpDist/price)*100}
-    else if(hitSL){slHits++;totalReturn-=(slDist/price)*100}
-    else{noHits++;const endReturn=side==='buy'?((p-price)/price)*100:((price-p)/price)*100;totalReturn+=endReturn}
     const thisReturn=hitTP?(tpDist/price)*100:hitSL?-(slDist/price)*100:(side==='buy'?((p-price)/price)*100:((price-p)/price)*100);
+    if(hitTP)tpHits++;else if(hitSL)slHits++;else noHits++;
+    totalReturn+=thisReturn;
     if(thisReturn<worstReturn)worstReturn=thisReturn;
   }
 
@@ -524,7 +522,7 @@ function monteCarloSim(price,slDist,tpDist,side,atr,trendBias=0,numSims=200,step
     noHitPct:Math.round(noHits/numSims*100),
     expectedReturn:Math.round(totalReturn/numSims*100)/100,
     worstCase:Math.round(worstReturn*100)/100,
-    sims:numSims
+    sims:numSims,steps
   };
 }
 
@@ -627,9 +625,72 @@ function getSharpe(){
   const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
   const variance=returns.reduce((a,b)=>a+(b-mean)**2,0)/returns.length;
   const std=Math.sqrt(variance);
-  const sharpe=std>0?mean/std*Math.sqrt(252):0; // annualized
+  const sharpe=std>0?mean/std*Math.sqrt(252):0;
   const winRate=shadowTrades.stats.wins/(shadowTrades.stats.wins+shadowTrades.stats.losses)*100;
   return{sharpe:Math.round(sharpe*100)/100,mean:Math.round(mean*100)/100,std:Math.round(std*100)/100,winRate:Math.round(winRate),trades:h.length};
+}
+
+// ═══ SHADOW LEARNING — learns from shadow trade outcomes ═══
+let shadowLearning={
+  confBuckets:{},   // confidence range → win rate
+  sideBias:null,     // buy vs sell performance
+  lastAnalysis:0,
+  insights:[]
+};
+
+function shadowLearn(){
+  const h=shadowTrades.history;
+  if(h.length<15||Date.now()-shadowLearning.lastAnalysis<300000)return; // need 15+ trades, analyze every 5min
+  shadowLearning.lastAnalysis=Date.now();
+
+  // 1. Learn which confidence levels actually win
+  const confBuckets={'70-79':{w:0,l:0},'80-89':{w:0,l:0},'90-100':{w:0,l:0}};
+  for(const t of h){
+    const c=t.confidence||0;
+    const bucket=c>=90?'90-100':c>=80?'80-89':'70-79';
+    if(t.result==='tp')confBuckets[bucket].w++;
+    else if(t.result==='sl')confBuckets[bucket].l++;
+  }
+  shadowLearning.confBuckets=confBuckets;
+
+  // 2. Learn buy vs sell performance
+  const buys=h.filter(t=>t.side==='buy');
+  const sells=h.filter(t=>t.side==='sell');
+  const buyWR=buys.length>=5?buys.filter(t=>t.result==='tp').length/buys.length:null;
+  const sellWR=sells.length>=5?sells.filter(t=>t.result==='tp').length/sells.length:null;
+  shadowLearning.sideBias={buyWinRate:buyWR?Math.round(buyWR*100):null,sellWinRate:sellWR?Math.round(sellWR*100):null,buyCount:buys.length,sellCount:sells.length};
+
+  // 3. Generate insights
+  const insights=[];
+  for(const[range,data] of Object.entries(confBuckets)){
+    const total=data.w+data.l;
+    if(total>=5){
+      const wr=Math.round(data.w/total*100);
+      if(wr<40)insights.push({type:'warning',msg:range+'% confidence trades winning only '+wr+'% — consider raising threshold'});
+      else if(wr>=70)insights.push({type:'positive',msg:range+'% confidence trades winning '+wr+'% — sweet spot'});
+    }
+  }
+  if(buyWR!==null&&sellWR!==null){
+    if(buyWR>sellWR+0.15)insights.push({type:'info',msg:'BUY signals outperforming SELL by '+Math.round((buyWR-sellWR)*100)+'% — market may favor longs'});
+    else if(sellWR>buyWR+0.15)insights.push({type:'info',msg:'SELL signals outperforming BUY by '+Math.round((sellWR-buyWR)*100)+'% — market may favor shorts'});
+  }
+
+  // 4. Overall assessment
+  const sharpe=getSharpe();
+  if(sharpe.sharpe<0)insights.push({type:'warning',msg:'Negative Sharpe ('+sharpe.sharpe+') — strategy losing money on average. Consider pausing live trades.'});
+  else if(sharpe.sharpe>=1.5)insights.push({type:'positive',msg:'Sharpe '+sharpe.sharpe+' — strong edge detected. Strategy is working.'});
+
+  shadowLearning.insights=insights;
+
+  // 5. Auto-adjust: if shadow shows signals below 80% conf are losing, raise the threshold
+  const low=confBuckets['70-79'];
+  if(low.w+low.l>=10){
+    const lowWR=low.w/(low.w+low.l);
+    if(lowWR<0.35){
+      // 70-79% confidence signals are losing — raise bar
+      botLog('🧠 SHADOW LEARNING: 70-79% conf signals win rate only '+Math.round(lowWR*100)+'% — these are not profitable. Bot will be pickier.');
+    }
+  }
 }
 
 // ═══ COUNCIL VOTE (tiered weighted + multi-timeframe) ═══
@@ -714,7 +775,7 @@ function councilVote(a,requiredAgree=4){
 }
 
 // ═══ BOT STATE ═══
-const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','ADA-USDT','DOGE-USDT','LINK-USDT','AVAX-USDT','DOT-USDT','BNB-USDT','SHIB-USDT','UNI-USDT','ATOM-USDT','LTC-USDT','FIL-USDT','NEAR-USDT','APT-USDT','ARB-USDT','OP-USDT','SUI-USDT','SEI-USDT','INJ-USDT','FET-USDT','RENDER-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT','TIA-USDT','AAVE-USDT','XLM-USDT','HBAR-USDT','VET-USDT','FTM-USDT','GRT-USDT','STX-USDT','IMX-USDT','JASMY-USDT','EOS-USDT','ALGO-USDT','SAND-USDT','MANA-USDT','CRV-USDT','ONDO-USDT','JUP-USDT','PENDLE-USDT','KAS-USDT','RUNE-USDT','GALA-USDT','DYDX-USDT'];
+const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','ADA-USDT','DOGE-USDT','LINK-USDT','AVAX-USDT','DOT-USDT','BNB-USDT','SHIB-USDT','UNI-USDT','ATOM-USDT','LTC-USDT','FIL-USDT','NEAR-USDT','APT-USDT','ARB-USDT','OP-USDT','SUI-USDT','SEI-USDT','INJ-USDT','FET-USDT','RENDER-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT','TIA-USDT','AAVE-USDT','XLM-USDT','HBAR-USDT','VET-USDT','GRT-USDT','STX-USDT','IMX-USDT','JASMY-USDT','ALGO-USDT','SAND-USDT','MANA-USDT','CRV-USDT','ONDO-USDT','JUP-USDT','PENDLE-USDT','KAS-USDT','RUNE-USDT','DYDX-USDT'];
 const SETTINGS_FILE=path.join(__dirname,'.bot-settings.json');
 const STATE_FILE=path.join(__dirname,'.bot-state.json');
 const bot={
@@ -1219,6 +1280,9 @@ async function tick(){
 
     // Auto-tune settings based on current portfolio size
     autoTuneForBalance(getCurBal());
+
+    // Shadow learning — analyze patterns from shadow trades
+    shadowLearn();
 
     // ALWAYS fetch BTC first so altcoin agents know BTC's state
     try{
@@ -1756,6 +1820,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     sharpe:getSharpe(),
     supervisor:{circuitBroken:supervisor.circuitBroken,mode:supervisor.mode,consecutiveLosses:supervisor.consecutiveLosses,consecutiveWins:supervisor.consecutiveWins,recentWinRate:supervisor.recentTrades.length>=5?Math.round(supervisor.recentTrades.slice(-10).filter(t=>t.isWin).length/Math.min(supervisor.recentTrades.length,10)*100):null,agentReport:getAgentReport(),recentAdjustments:supervisor.adjustments.slice(-5),autoTuneBal:lastAutoTuneBal},
     shadowStats:{active:shadowTrades.active.length,history:shadowTrades.history.length,wins:shadowTrades.stats.wins,losses:shadowTrades.stats.losses},
+    learning:{confBuckets:shadowLearning.confBuckets,sideBias:shadowLearning.sideBias,insights:shadowLearning.insights},
     // Market regime
     regime:{
       btc:btcAnalysisCache?{condition:btcAnalysisCache.condition,rsi:btcAnalysisCache.rsi,change1h:btcAnalysisCache.priceChange1h,change4h:btcAnalysisCache.priceChange4h}:null,
