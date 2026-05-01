@@ -282,6 +282,21 @@ async function refresh(){
       +'<div class="st"><div class="sl">Signals</div><div class="sv" style="font-size:14px">'+s.trades+'</div><div class="ss">'+(ss.active||0)+' active</div></div>'
       +'</div>'
       +(s.trades<10?'<div style="margin-top:6px;font-size:9px;color:var(--t3)">Need '+(10-s.trades)+' more signals for reliable Sharpe</div>':'');
+    // Learning insights
+    if(d.learning&&d.learning.insights&&d.learning.insights.length){
+      let lhtml='<div style="margin-top:8px;border-top:1px solid var(--b1);padding-top:8px;font-size:9px">';
+      lhtml+='<div style="color:var(--t3);margin-bottom:4px;font-weight:600">🧠 Shadow Learning Insights:</div>';
+      for(const ins of d.learning.insights){
+        const col=ins.type==='positive'?'var(--gr)':ins.type==='warning'?'var(--re)':'var(--bl)';
+        const icon=ins.type==='positive'?'✅':ins.type==='warning'?'⚠':'ℹ';
+        lhtml+='<div style="color:'+col+';margin:2px 0">'+icon+' '+ins.msg+'</div>';
+      }
+      if(d.learning.sideBias&&(d.learning.sideBias.buyWinRate!==null||d.learning.sideBias.sellWinRate!==null)){
+        lhtml+='<div style="color:var(--t3);margin-top:4px">Buy WR: '+(d.learning.sideBias.buyWinRate!==null?d.learning.sideBias.buyWinRate+'% ('+d.learning.sideBias.buyCount+')':'—')+' | Sell WR: '+(d.learning.sideBias.sellWinRate!==null?d.learning.sideBias.sellWinRate+'% ('+d.learning.sideBias.sellCount+')':'—')+'</div>';
+      }
+      lhtml+='</div>';
+      document.getElementById('sharpe-content').innerHTML+=lhtml;
+    }
   }
 
   // Supervisor
