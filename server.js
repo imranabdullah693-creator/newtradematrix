@@ -486,14 +486,14 @@ function monteCarloSim(price,slDist,tpDist,side,atr,trendBias=0,numSims=200){
   // So N = (D/vol)^2. We need enough steps to reach TP
   const tpFracDist=tpDist/price;
   const stepsNeeded=Math.ceil((tpFracDist/volPerStep)**2);
-  const steps=Math.max(50,Math.min(300,stepsNeeded*2));
+  const steps=Math.max(40,Math.min(100,stepsNeeded));
 
   let tpHits=0,slHits=0,noHits=0;
   let totalReturn=0,worstReturn=0;
   const sl=side==='buy'?price-slDist:price+slDist;
   const tp=side==='buy'?price+tpDist:price-tpDist;
   const rawDrift=side==='buy'?trendBias:-trendBias;
-  const driftPerStep=rawDrift*volPerStep*0.3;
+  const driftPerStep=rawDrift*volPerStep*0.12;
 
   for(let i=0;i<numSims;i++){
     let p=price;
@@ -595,7 +595,7 @@ function shadowUpdate(sym,currentPrice){
     const hit_sl=(s.side==='buy'&&currentPrice<=s.sl)||(s.side==='sell'&&currentPrice>=s.sl);
     if(!hit_tp&&!hit_sl){
       // Check timeout — 4 hours max
-      if(Date.now()-s.time>4*60*60*1000){
+      if(Date.now()-s.time>12*60*60*1000){
         s.resolved=true;
         const dir=s.side==='buy'?1:-1;
         s.exitPrice=currentPrice;
@@ -640,57 +640,93 @@ let shadowLearning={
 
 function shadowLearn(){
   const h=shadowTrades.history;
-  if(h.length<15||Date.now()-shadowLearning.lastAnalysis<300000)return; // need 15+ trades, analyze every 5min
+  if(h.length<15||Date.now()-shadowLearning.lastAnalysis<300000)return;
   shadowLearning.lastAnalysis=Date.now();
-
-  // 1. Learn which confidence levels actually win
+  supervisorSaveOriginal();
+  const orig=supervisor.originalSettings||{};
+  const recent=h.slice(-50);
+  const slHits=recent.filter(t=>t.result==='sl').length;
+  const tpHits=recent.filter(t=>t.result==='tp').length;
+  const timeouts=recent.filter(t=>t.result==='timeout').length;
+  const totalResolved=slHits+tpHits+timeouts;
   const confBuckets={'70-79':{w:0,l:0},'80-89':{w:0,l:0},'90-100':{w:0,l:0}};
-  for(const t of h){
+  for(const t of recent){
     const c=t.confidence||0;
     const bucket=c>=90?'90-100':c>=80?'80-89':'70-79';
     if(t.result==='tp')confBuckets[bucket].w++;
     else if(t.result==='sl')confBuckets[bucket].l++;
   }
   shadowLearning.confBuckets=confBuckets;
-
-  // 2. Learn buy vs sell performance
-  const buys=h.filter(t=>t.side==='buy');
-  const sells=h.filter(t=>t.side==='sell');
+  const buys=recent.filter(t=>t.side==='buy');
+  const sells=recent.filter(t=>t.side==='sell');
   const buyWR=buys.length>=5?buys.filter(t=>t.result==='tp').length/buys.length:null;
   const sellWR=sells.length>=5?sells.filter(t=>t.result==='tp').length/sells.length:null;
   shadowLearning.sideBias={buyWinRate:buyWR?Math.round(buyWR*100):null,sellWinRate:sellWR?Math.round(sellWR*100):null,buyCount:buys.length,sellCount:sells.length};
-
-  // 3. Generate insights
   const insights=[];
+
+  // ACTION 1: SL hit too often -> widen SL
+  if(totalResolved>=15&&slHits/totalResolved>0.6){
+    const r=Math.round(slHits/totalResolved*100);
+    insights.push({type:'action',msg:'SL hit '+r+'% -> widening SL +0.5 ATR'});
+    const nv=Math.min(+(bot.slATR+0.5).toFixed(1),5.0);
+    if(nv!==bot.slATR)supervisorAdjust('slATR',nv,'shadow: SL hit '+r+'%');
+  }
+
+  // ACTION 2: TP rarely reached -> bring TP closer
+  if(totalResolved>=15&&tpHits/totalResolved<0.25){
+    const r=Math.round(tpHits/totalResolved*100);
+    insights.push({type:'action',msg:'TP hit only '+r+'% -> bringing TP -0.5 ATR'});
+    const nv=Math.max(+(bot.tpATR-0.5).toFixed(1),1.0);
+    if(nv!==bot.tpATR)supervisorAdjust('tpATR',nv,'shadow: TP hit only '+r+'%');
+  }
+
+  // ACTION 3: Negative Sharpe -> reduce leverage
+  const sharpe=getSharpe();
+  if(sharpe.sharpe<-0.5&&h.length>=20){
+    insights.push({type:'action',msg:'Sharpe '+sharpe.sharpe+' -> reducing leverage -1'});
+    const nv=Math.max(1,bot.leverage-1);
+    if(nv!==bot.leverage)supervisorAdjust('leverage',nv,'shadow: Sharpe '+sharpe.sharpe);
+  }else if(sharpe.sharpe>=1.0&&h.length>=30){
+    const mx=orig.leverage||5;
+    if(bot.leverage<mx){
+      insights.push({type:'action',msg:'Sharpe '+sharpe.sharpe+' -> restoring leverage +1'});
+      supervisorAdjust('leverage',Math.min(bot.leverage+1,mx),'shadow: Sharpe '+sharpe.sharpe);
+    }
+  }
+
+  // ACTION 4: TP rate high + SL rate low -> strategy working, can tighten SL
+  if(totalResolved>=15&&tpHits/totalResolved>0.55&&slHits/totalResolved<0.3){
+    const r=Math.round(tpHits/totalResolved*100);
+    insights.push({type:'positive',msg:'TP hit '+r+'% -> tightening SL -0.3 ATR'});
+    const mn=orig.slATR||1.5;
+    if(bot.slATR>mn+0.3)supervisorAdjust('slATR',+(bot.slATR-0.3).toFixed(1),'shadow: TP rate '+r+'%');
+  }
+
+  // Confidence bucket insights
   for(const[range,data] of Object.entries(confBuckets)){
     const total=data.w+data.l;
-    if(total>=5){
+    if(total>=8){
       const wr=Math.round(data.w/total*100);
-      if(wr<40)insights.push({type:'warning',msg:range+'% confidence trades winning only '+wr+'% — consider raising threshold'});
-      else if(wr>=70)insights.push({type:'positive',msg:range+'% confidence trades winning '+wr+'% — sweet spot'});
+      if(wr<35)insights.push({type:'warning',msg:range+'% conf win rate '+wr+'%'});
+      else if(wr>=65)insights.push({type:'positive',msg:range+'% conf win rate '+wr+'%'});
     }
   }
+
+  // Side bias
   if(buyWR!==null&&sellWR!==null){
-    if(buyWR>sellWR+0.15)insights.push({type:'info',msg:'BUY signals outperforming SELL by '+Math.round((buyWR-sellWR)*100)+'% — market may favor longs'});
-    else if(sellWR>buyWR+0.15)insights.push({type:'info',msg:'SELL signals outperforming BUY by '+Math.round((sellWR-buyWR)*100)+'% — market may favor shorts'});
+    if(buyWR>sellWR+0.15)insights.push({type:'info',msg:'BUY outperforms SELL by '+Math.round((buyWR-sellWR)*100)+'%'});
+    else if(sellWR>buyWR+0.15)insights.push({type:'info',msg:'SELL outperforms BUY by '+Math.round((sellWR-buyWR)*100)+'%'});
   }
 
-  // 4. Overall assessment
-  const sharpe=getSharpe();
-  if(sharpe.sharpe<0)insights.push({type:'warning',msg:'Negative Sharpe ('+sharpe.sharpe+') — strategy losing money on average. Consider pausing live trades.'});
-  else if(sharpe.sharpe>=1.5)insights.push({type:'positive',msg:'Sharpe '+sharpe.sharpe+' — strong edge detected. Strategy is working.'});
-
+  // Summary
+  if(sharpe.sharpe<0)insights.push({type:'warning',msg:'Sharpe '+sharpe.sharpe+' — net negative'});
+  else if(sharpe.sharpe>=1.5)insights.push({type:'positive',msg:'Sharpe '+sharpe.sharpe+' — strong edge'});
+  else if(sharpe.sharpe>=0.5)insights.push({type:'info',msg:'Sharpe '+sharpe.sharpe+' — mild edge'});
+  insights.push({type:'info',msg:'SL/TP/Timeout: '+slHits+'/'+tpHits+'/'+timeouts+' of '+totalResolved});
   shadowLearning.insights=insights;
 
-  // 5. Auto-adjust: if shadow shows signals below 80% conf are losing, raise the threshold
-  const low=confBuckets['70-79'];
-  if(low.w+low.l>=10){
-    const lowWR=low.w/(low.w+low.l);
-    if(lowWR<0.35){
-      // 70-79% confidence signals are losing — raise bar
-      botLog('🧠 SHADOW LEARNING: 70-79% conf signals win rate only '+Math.round(lowWR*100)+'% — these are not profitable. Bot will be pickier.');
-    }
-  }
+  const actionCount=insights.filter(i=>i.type==='action').length;
+  if(actionCount>0)botLog('\ud83e\udde0 SHADOW LEARNING: '+actionCount+' adjustment(s) from '+h.length+' signals | SL:'+bot.slATR+' TP:'+bot.tpATR+' Lev:'+bot.leverage);
 }
 
 // ═══ COUNCIL VOTE (tiered weighted + multi-timeframe) ═══
@@ -737,7 +773,7 @@ function councilVote(a,requiredAgree=4){
 
   // SIMPLIFIED GATES:
   // Gate 1: Weighted score threshold (lower = more trades)
-  const weightThreshold=Math.max(8,requiredAgree*2); // e.g., 4 agents = need 8 pts
+  const weightThreshold=Math.max(6,Math.floor(requiredAgree*1.5)); // e.g., 4 agents = need 8 pts
   // Gate 2: At least 1 Tier 1 agent must agree (anti-manipulation)
   const t1Required=2;
 
@@ -1119,16 +1155,17 @@ function autoTuneForBalance(bal){
 
   if(bal<10){
     tier='MICRO (<$10)';
-    settings={leverage:2,riskPct:2,slATR:2.5,tpATR:5.0,maxOpenTrades:1,requiredAgents:5,smallBalanceMode:'on'};
+    // Priority: SURVIVE. Wide SL, close TP, win often with small gains
+    settings={leverage:2,riskPct:2,slATR:3.0,tpATR:2.0,maxOpenTrades:1,requiredAgents:5,smallBalanceMode:'on'};
   }else if(bal<25){
     tier='TINY ($10-25)';
-    settings={leverage:3,riskPct:3,slATR:2.0,tpATR:4.0,maxOpenTrades:2,requiredAgents:5,smallBalanceMode:'on'};
+    settings={leverage:3,riskPct:3,slATR:2.5,tpATR:2.0,maxOpenTrades:2,requiredAgents:5,smallBalanceMode:'on'};
   }else if(bal<50){
     tier='SMALL ($25-50)';
-    settings={leverage:3,riskPct:3,slATR:2.0,tpATR:4.0,maxOpenTrades:2,requiredAgents:4,smallBalanceMode:'on'};
+    settings={leverage:3,riskPct:3,slATR:2.0,tpATR:2.5,maxOpenTrades:2,requiredAgents:4,smallBalanceMode:'on'};
   }else if(bal<100){
     tier='STARTER ($50-100)';
-    settings={leverage:5,riskPct:2.5,slATR:1.5,tpATR:3.5,maxOpenTrades:3,requiredAgents:4,smallBalanceMode:'auto'};
+    settings={leverage:5,riskPct:2.5,slATR:2.0,tpATR:3.0,maxOpenTrades:3,requiredAgents:4,smallBalanceMode:'auto'};
   }else if(bal<500){
     tier='GROWING ($100-500)';
     settings={leverage:5,riskPct:2,slATR:1.5,tpATR:3.0,maxOpenTrades:5,requiredAgents:4,smallBalanceMode:'off'};
@@ -1425,8 +1462,8 @@ async function tick(){
         if(htfStrong)tpProb+=10;
         if(council.confidence>=85)tpProb+=10;
         if(council.confidence>=75)tpProb+=5;
-        if(tpDist/slDist>=3)tpProb+=5;
-        if(tpDist/slDist<2)tpProb-=10;
+        if(tpDist/slDist>=2)tpProb+=5;
+        if(tpDist/slDist<0.5)tpProb-=10; // only penalize really bad RR
         if(a.btc){
           const btcAgrees=(council.decision==='buy'&&a.btc.condition.includes('bullish'))||
                           (council.decision==='sell'&&a.btc.condition.includes('bearish'));
@@ -1435,6 +1472,12 @@ async function tick(){
         }
         // Blend with Monte Carlo (70% rule-based, 30% MC)
         tpProb=Math.round(tpProb*0.7+mc.tpProb*0.3);
+
+        // Shadow learning adjustment: if shadow data shows one side winning more, adjust
+        if(shadowLearning.preferredSide){
+          if(council.decision===shadowLearning.preferredSide)tpProb+=5; // bonus for winning side
+          else tpProb-=5; // penalty for losing side
+        }
 
         if(tpProb<tpProbThreshold){
           botLog(`${coin} SKIP: TP ${tpProb}% < ${tpProbThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${dailyTargetHit?' 🎯':''}`);
@@ -1538,7 +1581,9 @@ async function tick(){
         }
 
         // Apply quant grade size multiplier (A+=100%, A=80%, B=60%, C=40%)
-        posUSD=Math.round(posUSD*qg.sizeMultiplier*(supCheck.riskReduction||1.0)*100)/100;
+        // Apply grade multiplier only for accounts >$100 — small accounts can't afford to reduce further
+        const gradeMult=bal>=100?qg.sizeMultiplier:Math.max(0.8,qg.sizeMultiplier); // small accounts: min 80%
+        posUSD=Math.round(posUSD*gradeMult*(supCheck.riskReduction||1.0)*100)/100;
         if(posUSD<minSize){
           botLog(`${coin} SKIP: grade ${qg.grade} reduced pos to $${posUSD.toFixed(2)} < min $${minSize}`);
           continue;
