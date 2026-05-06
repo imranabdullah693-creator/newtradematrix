@@ -2220,6 +2220,131 @@ app.post('/api/bot/ai-advice',mw,async(req,res)=>{
 app.get('/api/prices',async(req,res)=>{try{const r=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const d=await safeJSON(r);if(d.code!=='200000')return res.status(502).json({error:'Feed error'});const prices={};for(const t of d.data.ticker)if(ALL_SYMBOLS.includes(t.symbol))prices[t.symbol]={price:+t.last,change:+t.changeRate*100,vol:+t.volValue};res.json({success:true,prices})}catch(e){res.status(500).json({error:e.message})}});
 
 app.get('/health',(_,res)=>res.json({status:'ok'}));
+
+// Public overview page — shareable with AI tools, no auth needed
+app.get('/about',(req,res)=>{
+  const format=req.query.format;
+  const data={
+    name:'TradeMatrix Pro',
+    version:'v4 (Quant Edition)',
+    description:'Autonomous multi-agent crypto trading bot with institutional quant features. Runs 24/7 on Railway cloud, connected to KuCoin exchange (spot + futures). Uses 10 specialist AI agents organized in 3 manipulation-resistant tiers that vote on every trade. Only executes when strict 5-gate consensus + Monte Carlo simulation + quant grading confirms edge.',
+    architecture:{
+      backend:'Node.js / Express',
+      hosting:'Railway cloud (Singapore region, 24/7)',
+      exchange:'KuCoin (spot + futures via REST API)',
+      frontend:'Vanilla HTML/CSS/JS single-page dashboard',
+      dataSources:['KuCoin (price/candle data)','CryptoCompare (crypto news)','CoinGecko (news + market data)','CoinPaprika (events)','Alternative.me (Fear & Greed Index)'],
+      auth:'Email/password with JWT tokens'
+    },
+    tradingEngine:{
+      coinsScanned:ALL_SYMBOLS.length,
+      coinList:ALL_SYMBOLS.map(s=>s.replace('-USDT','')),
+      timeframes:['15-minute (entry)','1-hour (confirmation)','4-hour (big picture)'],
+      scanInterval:'45 seconds per batch of 5 coins',
+      fullScanTime:Math.ceil(ALL_SYMBOLS.length/5)+' batches (~'+(Math.ceil(ALL_SYMBOLS.length/5)*0.75).toFixed(0)+' minutes)'
+    },
+    agentCouncil:{
+      totalAgents:10,
+      tiers:{
+        tier1:{weight:'3x',agents:['Trend Master (EMA 9/21/50 + ADX)','Fibonacci Analyst (S/R + golden pocket)','ATR Volatility (squeeze detection)','Sentiment Analyst (Fear & Greed + news)','BTC Correlation (alt-BTC alignment)'],description:'Hardest to manipulate — whales cannot fake these signals'},
+        tier2:{weight:'2x',agents:['MACD Specialist (crossovers + divergence)','Bollinger Trader (band position + mean reversion)','Quant AI (z-score + ROC + mean reversion)'],description:'Moderate manipulation risk — lagging indicators provide buffer'},
+        tier3:{weight:'1x',agents:['Momentum Hunter (RSI context-aware)','Volume Expert (OBV + VWAP)'],description:'Easiest to manipulate — lowest voting weight'}
+      },
+      contextAware:'Agents interpret indicators based on market trend (RSI 42 in uptrend = buy dip, not sell)'
+    },
+    tradeExecution:{
+      gates:[
+        {gate:1,name:'Council Consensus',requirement:'70%+ confidence, weighted points threshold, 2+ Tier 1 agents'},
+        {gate:2,name:'Correlation Filter',requirement:'Max 1 trade per correlated asset group (8 groups defined)'},
+        {gate:3,name:'Regime Detection',requirement:'7 regime types — refuses trades in HIGH_VOL_CHAOS, LOW_VOL_DRIFT, UNCERTAIN'},
+        {gate:4,name:'Monte Carlo Simulation',requirement:'200 random price path simulations using real ATR volatility + trend drift'},
+        {gate:5,name:'TP Probability',requirement:'65%+ blended probability (70% rule-based + 30% Monte Carlo)'},
+        {gate:6,name:'Quant Grade',requirement:'A+/A/B/C/Reject scoring (85-100 = A+, <40 = Reject)'},
+        {gate:7,name:'Daily Profit Target',requirement:'After 1.5% daily gain, thresholds raise to 85%+ (only A+ setups)'},
+        {gate:8,name:'Supervisor Check',requirement:'Circuit breaker (3 losses = 15min pause), risk reduction on losing streaks'},
+        {gate:9,name:'Position Sizing',requirement:'Divided across trade slots, margin buffer for KuCoin, grade multiplier'}
+      ]
+    },
+    quantFeatures:{
+      monteCarlo:'200 simulations with dynamic step count based on ATR/price ratio. Uses trend-aligned drift (12% of vol). Reports TP%, SL%, expected return, worst case.',
+      regimeDetection:'7 regimes: TRENDING_UP, TRENDING_DOWN, MEAN_REVERTING, BREAKOUT_COMPRESSION, HIGH_VOL_CHAOS, LOW_VOL_DRIFT, UNCERTAIN. Uses ATR, ADX, BB width, RSI.',
+      quantGrade:'0-100 scoring → A+/A/B/C/Reject. Factors: council confidence (30pts), TP probability (25pts), MC confirmation (20pts), regime quality (15pts), BTC alignment (10pts). Grade determines position size multiplier.',
+      correlationGroups:'8 asset groups (L1, ETH, ALT_HIGH, ALT_MID, ALT_LOW, MEME, AI_GAMING, DEFI2). Max 1 open trade per group per direction.',
+      shadowTrading:'Silent paper portfolio tracks ALL council signals. Resolves against real price within 12 hours. Builds Sharpe ratio, win rate by confidence bucket, buy/sell bias analysis.',
+      shadowLearning:'Every 5 minutes, analyzes shadow results and AUTO-ADJUSTS: widens SL if hit too often, brings TP closer if rarely reached, reduces leverage on negative Sharpe, restores on positive Sharpe.',
+      supervisorBot:'Monitors real trade performance. 3 consecutive losses → circuit breaker (15min pause + reduced leverage + stricter agent requirements). Tracks per-agent accuracy. 4 modes: NORMAL, CAUTIOUS, RECOVERY, AGGRESSIVE.',
+      autoTune:'Automatically adjusts leverage, risk%, SL, TP, max trades based on portfolio size. 7 tiers from MICRO (<$10) to STANDARD ($1K+).'
+    },
+    riskManagement:{
+      stopLoss:'ATR-based (configurable multiplier)',
+      takeProfit:'ATR-based (configurable multiplier)',
+      trailingStop:'ATR-based trailing, activates after entry',
+      maxDrawdown:'15% (configurable)',
+      dailyTarget:'1.5% (configurable, raises thresholds when hit)',
+      circuitBreaker:'3 consecutive losses → 15 minute pause + auto-reduce risk parameters',
+      positionSizing:'Risk-based with balance division across trade slots, KuCoin margin buffer'
+    },
+    indicators:['EMA 9/21/50','RSI (context-aware)','MACD (line/signal/histogram)','Bollinger Bands (upper/lower/position%)','ATR (Average True Range)','ADX (trend strength)','Fibonacci (support/resistance/golden pocket)','VWAP','OBV (On-Balance Volume)','Stochastic RSI','Volume Trend','BTC price correlation (1h/4h change)'],
+    dashboardPages:['Overview (wallet, stats, positions, log, market regime, opportunities, quant stats, supervisor)','Council (10-agent vote visualization with confidence bars)','Trades (history with PnL)','News (live crypto + macro news with sentiment scoring)','Chart (TradingView embed with all timeframes)','Analysis (full quant report per coin — all indicators + MC + regime + grade + agent votes)','Backtest (historical strategy testing)','AI Advisor (Claude-powered analysis via Anthropic API)','Settings (configurable everything)','Connect (KuCoin API setup)'],
+    currentStatus:{
+      running:bot.running,
+      mode:bot.mode,
+      tradingType:bot.tradingType,
+      openTrades:bot.openTrades.length,
+      completedTrades:bot.history.length,
+      tickCount:typeof tickCount!=='undefined'?tickCount:0,
+      supervisorMode:supervisor.mode,
+      shadowSignals:shadowTrades.history.length,
+      sharpe:getSharpe()
+    }
+  };
+
+  if(format==='json')return res.json(data);
+
+  // HTML version
+  let h='<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TradeMatrix Pro — About</title><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#06090f;color:#c8d6e5;font-family:system-ui,-apple-system,sans-serif;padding:20px;max-width:900px;margin:0 auto;line-height:1.7;font-size:14px}h1{color:#00e676;font-size:24px;margin-bottom:4px}h2{color:#40c4ff;font-size:16px;margin:24px 0 8px;border-bottom:1px solid #1a2a3c;padding-bottom:4px}h3{color:#ffab40;font-size:13px;margin:12px 0 4px}p{margin:4px 0;color:#7a96b4}code{background:#0f1923;padding:2px 6px;border-radius:3px;font-size:12px;color:#e2eaf3}ul{margin:4px 0 4px 20px;color:#7a96b4}li{margin:2px 0}.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin:2px 0}.bg{background:rgba(0,230,118,0.15);color:#00e676}.bb{background:rgba(64,196,255,0.15);color:#40c4ff}.bp{background:rgba(179,136,255,0.15);color:#b388ff}.ba{background:rgba(255,171,64,0.15);color:#ffab40}.br{background:rgba(255,82,82,0.15);color:#ff5252}.card{background:#0a1018;border:1px solid #1a2a3c;border-radius:8px;padding:14px;margin:8px 0}.mono{font-family:monospace;font-size:12px}.status{display:flex;flex-wrap:wrap;gap:8px}.stat{background:#0f1923;padding:8px 12px;border-radius:6px;text-align:center}.stat-label{font-size:9px;color:#3d5a78;text-transform:uppercase}.stat-val{font-size:16px;font-weight:700;color:#e2eaf3;font-family:monospace}</style></head><body>';
+  h+='<h1>◆ '+data.name+' '+data.version+'</h1>';
+  h+='<p>'+data.description+'</p>';
+  h+='<p style="margin-top:8px"><span class="badge bg">'+data.tradingEngine.coinsScanned+' Coins</span> <span class="badge bb">10 Agents</span> <span class="badge bp">3 Tiers</span> <span class="badge ba">9 Gates</span> <span class="badge br">Monte Carlo</span></p>';
+
+  h+='<h2>Live Status</h2><div class="status">';
+  h+='<div class="stat"><div class="stat-label">Bot</div><div class="stat-val" style="color:'+(data.currentStatus.running?'#00e676':'#ff5252')+'">'+(data.currentStatus.running?'RUNNING':'OFF')+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Mode</div><div class="stat-val">'+data.currentStatus.mode.toUpperCase()+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Open</div><div class="stat-val">'+data.currentStatus.openTrades+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Completed</div><div class="stat-val">'+data.currentStatus.completedTrades+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Scans</div><div class="stat-val">'+data.currentStatus.tickCount+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Supervisor</div><div class="stat-val">'+data.currentStatus.supervisorMode.toUpperCase()+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Shadow</div><div class="stat-val">'+data.currentStatus.shadowSignals+'</div></div>';
+  h+='<div class="stat"><div class="stat-label">Sharpe</div><div class="stat-val">'+data.currentStatus.sharpe.sharpe+'</div></div>';
+  h+='</div>';
+
+  h+='<h2>Agent Council</h2>';
+  for(const[tier,info] of Object.entries(data.agentCouncil.tiers)){
+    const cls=tier==='tier1'?'bg':tier==='tier2'?'bb':'bp';
+    h+='<h3><span class="badge '+cls+'">'+tier.toUpperCase()+' ('+info.weight+')</span> '+info.description+'</h3><ul>';
+    for(const a of info.agents)h+='<li>'+a+'</li>';
+    h+='</ul>';
+  }
+
+  h+='<h2>Trade Execution (9 Gates)</h2>';
+  for(const g of data.tradeExecution.gates)h+='<div class="card"><strong style="color:#40c4ff">Gate '+g.gate+': '+g.name+'</strong><br/><span style="color:#7a96b4">'+g.requirement+'</span></div>';
+
+  h+='<h2>Quant Features</h2>';
+  for(const[k,v] of Object.entries(data.quantFeatures))h+='<div class="card"><strong style="color:#ffab40">'+k.replace(/([A-Z])/g,' $1').trim()+'</strong><br/><span style="color:#7a96b4">'+v+'</span></div>';
+
+  h+='<h2>Indicators ('+data.indicators.length+')</h2><p>'+data.indicators.join(' · ')+'</p>';
+  h+='<h2>Coins ('+data.tradingEngine.coinsScanned+')</h2><p>'+data.tradingEngine.coinList.join(', ')+'</p>';
+  h+='<h2>Dashboard Pages ('+data.dashboardPages.length+')</h2><ul>';
+  for(const p of data.dashboardPages)h+='<li>'+p+'</li>';
+  h+='</ul>';
+  h+='<h2>Architecture</h2><ul>';
+  for(const[k,v] of Object.entries(data.architecture)){if(Array.isArray(v))h+='<li><strong>'+k+':</strong> '+v.join(', ')+'</li>';else h+='<li><strong>'+k+':</strong> '+v+'</li>'}
+  h+='</ul>';
+
+  h+='<div style="margin-top:30px;padding:12px;border:1px solid #1a2a3c;border-radius:8px;font-size:11px;color:#3d5a78">API: Add <code>?format=json</code> to get this data as JSON for programmatic access.</div>';
+  h+='</body></html>';
+  res.send(h);
+});
 app.use(express.static(path.join(__dirname,'public')));
 app.get('*',(_,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 const PORT=process.env.PORT||3000;
