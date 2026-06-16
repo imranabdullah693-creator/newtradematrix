@@ -32,7 +32,83 @@ const TA={
   vwap(h,l,c,v){let cv=0,ct=0;const r=[];for(let i=0;i<c.length;i++){const tp=(h[i]+l[i]+c[i])/3;ct+=tp*v[i];cv+=v[i];r.push(cv>0?ct/cv:tp)}return r},
   adx(h,l,c,p=14){if(h.length<p+1)return{adx:[],diPlus:[],diMinus:[]};const dP=[],dM=[],tr=[];for(let i=1;i<h.length;i++){const u=h[i]-h[i-1],d=l[i-1]-l[i];dP.push(u>d&&u>0?u:0);dM.push(d>u&&d>0?d:0);tr.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])))}const sTR=TA.ema(tr,p),sDMP=TA.ema(dP,p),sDMM=TA.ema(dM,p),len=Math.min(sTR.length,sDMP.length,sDMM.length),diP=[],diM=[],dx=[];for(let i=0;i<len;i++){const dp=sTR[i]>0?(sDMP[i]/sTR[i])*100:0,dm=sTR[i]>0?(sDMM[i]/sTR[i])*100:0;diP.push(dp);diM.push(dm);dx.push(dp+dm>0?Math.abs(dp-dm)/(dp+dm)*100:0)}return{adx:TA.ema(dx,p),diPlus:diP,diMinus:diM}},
   obv(c,v){const r=[0];for(let i=1;i<c.length;i++)r.push(c[i]>c[i-1]?r[i-1]+v[i]:c[i]<c[i-1]?r[i-1]-v[i]:r[i-1]);return r},
-  volTrend(v,p=20){if(v.length<p)return'normal';const rec=v.slice(-5).reduce((a,b)=>a+b,0)/5,avg=v.slice(-p).reduce((a,b)=>a+b,0)/p;return rec>avg*1.5?'high':rec<avg*0.5?'low':'normal'}
+  volTrend(v,p=20){if(v.length<p)return'normal';const rec=v.slice(-5).reduce((a,b)=>a+b,0)/5,avg=v.slice(-p).reduce((a,b)=>a+b,0)/p;return rec>avg*1.5?'high':rec<avg*0.5?'low':'normal'},
+  // ═══ EXTENDED INDICATORS ═══
+  choppiness(h,l,c,p=14){
+    // Choppiness Index: <38=trending, >61=ranging
+    if(h.length<p+1)return[];const atr=TA.atr(h,l,c,1);const res=[];
+    for(let i=p;i<c.length;i++){
+      const sumATR=atr.slice(i-p,i).reduce((a,b)=>a+b,0);
+      const hh=Math.max(...h.slice(i-p,i));const ll=Math.min(...l.slice(i-p,i));
+      const range=hh-ll;
+      res.push(range>0?100*Math.log10(sumATR/range)/Math.log10(p):50);
+    }
+    return res;
+  },
+  pivotPoints(h,l,c){
+    // Classic pivot points from last candle
+    const i=c.length-2;if(i<0)return{pp:0,r1:0,r2:0,s1:0,s2:0};
+    const pp=(h[i]+l[i]+c[i])/3;
+    return{pp,r1:2*pp-l[i],r2:pp+(h[i]-l[i]),s1:2*pp-h[i],s2:pp-(h[i]-l[i])};
+  },
+  higherHighsLows(h,l,lookback=10){
+    // Count higher highs and higher lows
+    if(h.length<lookback)return{hh:0,hl:0,lh:0,ll:0,trend:'unclear'};
+    let hh=0,hl=0,lh=0,ll=0;
+    const start=h.length-lookback;
+    for(let i=start+2;i<h.length;i+=2){
+      if(h[i]>h[i-2])hh++;else lh++;
+      if(l[i]>l[i-2])hl++;else ll++;
+    }
+    const trend=hh>lh&&hl>ll?'uptrend':lh>hh&&ll>hl?'downtrend':'unclear';
+    return{hh,hl,lh,ll,trend};
+  },
+  trendSlope(c,p=20){
+    // Linear regression slope of close prices
+    if(c.length<p)return 0;
+    const recent=c.slice(-p);const n=recent.length;
+    const xMean=(n-1)/2;const yMean=recent.reduce((a,b)=>a+b,0)/n;
+    let num=0,den=0;
+    for(let i=0;i<n;i++){num+=(i-xMean)*(recent[i]-yMean);den+=(i-xMean)**2}
+    return den>0?(num/den)/yMean*100:0; // % slope per candle
+  },
+  candlePatterns(o,h,l,c){
+    // Detect key candlestick patterns on last 3 candles
+    const n=c.length;if(n<3)return[];
+    const patterns=[];
+    const i=n-1;const body=Math.abs(c[i]-o[i]);const range=h[i]-l[i];
+    const prevBody=Math.abs(c[i-1]-o[i-1]);const prevRange=h[i-1]-l[i-1];
+    const isGreen=c[i]>o[i];const prevGreen=c[i-1]>o[i-1];
+    const upperWick=isGreen?h[i]-c[i]:h[i]-o[i];
+    const lowerWick=isGreen?o[i]-l[i]:c[i]-l[i];
+
+    // Doji: tiny body, equal wicks
+    if(range>0&&body/range<0.1)patterns.push('doji');
+    // Hammer: small body at top, long lower wick (bullish reversal)
+    if(range>0&&lowerWick>body*2&&upperWick<body*0.5)patterns.push('hammer');
+    // Shooting star: small body at bottom, long upper wick (bearish reversal)
+    if(range>0&&upperWick>body*2&&lowerWick<body*0.5)patterns.push('shooting_star');
+    // Bullish engulfing
+    if(isGreen&&!prevGreen&&c[i]>o[i-1]&&o[i]<c[i-1]&&body>prevBody)patterns.push('bullish_engulfing');
+    // Bearish engulfing
+    if(!isGreen&&prevGreen&&c[i]<o[i-1]&&o[i]>c[i-1]&&body>prevBody)patterns.push('bearish_engulfing');
+    // Inside bar
+    if(h[i]<h[i-1]&&l[i]>l[i-1])patterns.push('inside_bar');
+    // Three green/red soldiers
+    if(n>=3&&c[i]>o[i]&&c[i-1]>o[i-1]&&c[i-2]>o[i-2])patterns.push('three_green');
+    if(n>=3&&c[i]<o[i]&&c[i-1]<o[i-1]&&c[i-2]<o[i-2])patterns.push('three_red');
+    // Pin bar (long wick rejection)
+    if(range>0&&(lowerWick>range*0.6||upperWick>range*0.6))patterns.push(lowerWick>upperWick?'pin_bar_bull':'pin_bar_bear');
+    return patterns;
+  },
+  consecutiveCandles(o,c,lookback=5){
+    const n=c.length;let green=0,red=0;
+    for(let i=n-1;i>=Math.max(0,n-lookback);i--){
+      if(c[i]>o[i]){if(red>0)break;green++}
+      else{if(green>0)break;red++}
+    }
+    return{green,red};
+  }
 };
 
 // ═══ NEWS + SENTIMENT ═══
@@ -132,20 +208,24 @@ async function analyze(candles,sym='BTC-USDT'){
   if(e9&&e21&&e50&&r!==null){const diff=((e9-e21)/e21)*100;if(Math.abs(diff)<0.3&&r>40&&r<60&&ts==='weak')cond='sideways';else if(e9>e21&&e21>e50&&r>50)cond=ts==='strong'?'strong_bullish':'bullish';else if(e9<e21&&e21<e50&&r<50)cond=ts==='strong'?'strong_bearish':'bearish';else if(e9>e21)cond='mildly_bullish';else cond='mildly_bearish'}
   const obvSma=TA.sma(obv,20);
 
-  // BTC CORRELATION: attach BTC context to every non-BTC analysis
-  // Since altcoins often follow BTC, agents need to know BTC's state
+  // Extended indicators
+  const o=candles.map(x=>x.open||x.close); // open prices
+  const chop=TA.choppiness(h,l,c);const chopVal=chop.length?chop[chop.length-1]:50;
+  const pivots=TA.pivotPoints(h,l,c);
+  const hhll=TA.higherHighsLows(h,l);
+  const slope=TA.trendSlope(c);
+  const patterns=TA.candlePatterns(o,h,l,c);
+  const consecutive=TA.consecutiveCandles(o,c);
+
+  // BTC CORRELATION
   let btcContext=null;
   if(coin!=='BTC'&&btcAnalysisCache&&Date.now()-btcAnalysisCache.time<600000){
-    btcContext={
-      condition:btcAnalysisCache.condition,
-      rsi:btcAnalysisCache.rsi,
-      priceChange1h:btcAnalysisCache.priceChange1h,
-      priceChange4h:btcAnalysisCache.priceChange4h,
-      trendStrength:btcAnalysisCache.trendStrength
-    };
+    btcContext={condition:btcAnalysisCache.condition,rsi:btcAnalysisCache.rsi,priceChange1h:btcAnalysisCache.priceChange1h,priceChange4h:btcAnalysisCache.priceChange4h,trendStrength:btcAnalysisCache.trendStrength};
   }
 
-  return{price:L(c),condition:cond,trendStrength:ts,ema9:e9,ema21:e21,ema50:e50,rsi:r,prevRsi:P(rsi),atr:L(atr),macdLine:L(macd.line),macdSignal:L(macd.signal),macdHist:L(macd.hist),prevMacdHist:P(macd.hist),bbUpper:L(bb.upper),bbLower:L(bb.lower),bbSma:L(bb.sma),stochK:L(sr.k),stochD:L(sr.d),fib,vwap:L(vwap),adx:adxVal,diPlus:L(adx.diPlus),diMinus:L(adx.diMinus),obvTrend:L(obv)>L(obvSma)?'bullish':'bearish',volTrend,sentiment,news:{coin:coinNews,overall:news.overall},support:fib.nearestSupport,resistance:fib.nearestResistance,inGoldenPocket:fib.inGoldenPocket,btc:btcContext,coin}
+  return{price:L(c),condition:cond,trendStrength:ts,ema9:e9,ema21:e21,ema50:e50,rsi:r,prevRsi:P(rsi),atr:L(atr),macdLine:L(macd.line),macdSignal:L(macd.signal),macdHist:L(macd.hist),prevMacdHist:P(macd.hist),bbUpper:L(bb.upper),bbLower:L(bb.lower),bbSma:L(bb.sma),stochK:L(sr.k),stochD:L(sr.d),fib,vwap:L(vwap),adx:adxVal,diPlus:L(adx.diPlus),diMinus:L(adx.diMinus),obvTrend:L(obv)>L(obvSma)?'bullish':'bearish',volTrend,sentiment,news:{coin:coinNews,overall:news.overall},support:fib.nearestSupport,resistance:fib.nearestResistance,inGoldenPocket:fib.inGoldenPocket,btc:btcContext,coin,
+    // Extended
+    choppiness:chopVal,pivots,hhll,slope,patterns,consecutive}
 }
 
 // BTC analysis cache - updated every tick before alt analysis
@@ -1305,6 +1385,223 @@ function getAgentReport(){
   return report;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// STRATEGY COMBINATION ENGINE — tests hundreds of combos silently
+// ═══════════════════════════════════════════════════════════════
+
+// Binary signal generators — each returns {signal:'buy'|'sell'|'none', name}
+const SIGNALS={
+  ema_cross_9_21(a){return{signal:a.ema9>a.ema21?'buy':a.ema9<a.ema21?'sell':'none',name:'EMA 9/21 cross'}},
+  ema_cross_21_50(a){return{signal:a.ema21>a.ema50?'buy':a.ema21<a.ema50?'sell':'none',name:'EMA 21/50 cross'}},
+  ema_stack(a){return{signal:a.ema9>a.ema21&&a.ema21>a.ema50?'buy':a.ema9<a.ema21&&a.ema21<a.ema50?'sell':'none',name:'EMA stack'}},
+  macd_cross(a){return{signal:a.macdLine>a.macdSignal?'buy':a.macdLine<a.macdSignal?'sell':'none',name:'MACD cross'}},
+  macd_hist_flip(a){return{signal:a.macdHist>0&&a.prevMacdHist<=0?'buy':a.macdHist<0&&a.prevMacdHist>=0?'sell':'none',name:'MACD hist flip'}},
+  rsi_extreme(a){return{signal:a.rsi<30?'buy':a.rsi>70?'sell':'none',name:'RSI extreme'}},
+  rsi_mid_trend(a){return{signal:a.rsi>50&&a.rsi<65&&a.condition.includes('bullish')?'buy':a.rsi<50&&a.rsi>35&&a.condition.includes('bearish')?'sell':'none',name:'RSI mid-trend'}},
+  bb_touch(a){if(!a.bbUpper||!a.bbLower)return{signal:'none',name:'BB touch'};return{signal:a.price<=a.bbLower?'buy':a.price>=a.bbUpper?'sell':'none',name:'BB touch'}},
+  bb_squeeze(a){if(!a.bbUpper||!a.bbLower)return{signal:'none',name:'BB squeeze'};const w=((a.bbUpper-a.bbLower)/a.bbSma)*100;return{signal:w<3?'buy':'none',name:'BB squeeze'}},
+  adx_strong(a){return{signal:a.adx>25?'buy':'none',name:'ADX strong'}},
+  stoch_cross(a){return{signal:a.stochK<20&&a.stochD<20?'buy':a.stochK>80&&a.stochD>80?'sell':'none',name:'Stoch extreme'}},
+  vwap_position(a){return{signal:a.price>a.vwap?'buy':a.price<a.vwap?'sell':'none',name:'VWAP position'}},
+  obv_trend(a){return{signal:a.obvTrend==='bullish'?'buy':a.obvTrend==='bearish'?'sell':'none',name:'OBV trend'}},
+  volume_spike(a){return{signal:a.volTrend==='high'?'buy':'none',name:'Volume spike'}},
+  fib_support(a){if(!a.support||!a.price)return{signal:'none',name:'Fib support'};const dist=Math.abs(a.price-a.support)/a.price;return{signal:dist<0.01?'buy':'none',name:'Fib support'}},
+  fib_resist(a){if(!a.resistance||!a.price)return{signal:'none',name:'Fib resistance'};const dist=Math.abs(a.price-a.resistance)/a.price;return{signal:dist<0.01?'sell':'none',name:'Fib resistance'}},
+  golden_pocket(a){return{signal:a.inGoldenPocket?'buy':'none',name:'Golden pocket'}},
+  higher_highs(a){return{signal:a.hhll?.trend==='uptrend'?'buy':a.hhll?.trend==='downtrend'?'sell':'none',name:'HH/HL pattern'}},
+  trend_slope(a){return{signal:a.slope>0.1?'buy':a.slope<-0.1?'sell':'none',name:'Trend slope'}},
+  chop_trending(a){return{signal:a.choppiness<38?'buy':a.choppiness>61?'sell':'none',name:'Chop trending/ranging'}},
+  hammer(a){return{signal:a.patterns?.includes('hammer')||a.patterns?.includes('pin_bar_bull')?'buy':a.patterns?.includes('shooting_star')||a.patterns?.includes('pin_bar_bear')?'sell':'none',name:'Hammer/Star'}},
+  engulfing(a){return{signal:a.patterns?.includes('bullish_engulfing')?'buy':a.patterns?.includes('bearish_engulfing')?'sell':'none',name:'Engulfing'}},
+  three_soldiers(a){return{signal:a.patterns?.includes('three_green')?'buy':a.patterns?.includes('three_red')?'sell':'none',name:'3 soldiers/crows'}},
+  inside_bar(a){return{signal:a.patterns?.includes('inside_bar')?(a.condition.includes('bullish')?'buy':'sell'):'none',name:'Inside bar break'}},
+  btc_aligned(a){if(!a.btc)return{signal:'none',name:'BTC aligned'};return{signal:a.btc.condition.includes('bullish')?'buy':a.btc.condition.includes('bearish')?'sell':'none',name:'BTC aligned'}},
+  btc_momentum(a){if(!a.btc)return{signal:'none',name:'BTC momentum'};return{signal:a.btc.priceChange1h>0.5?'buy':a.btc.priceChange1h<-0.5?'sell':'none',name:'BTC 1h momentum'}},
+  pivot_support(a){if(!a.pivots)return{signal:'none',name:'Pivot S/R'};const dist_s=Math.abs(a.price-a.pivots.s1)/a.price;const dist_r=Math.abs(a.price-a.pivots.r1)/a.price;return{signal:dist_s<0.005?'buy':dist_r<0.005?'sell':'none',name:'Pivot S/R'}},
+  news_positive(a){return{signal:a.news?.overall?.bias==='bullish'?'buy':a.news?.overall?.bias==='bearish'?'sell':'none',name:'News sentiment'}},
+  fear_greed(a){return{signal:a.sentiment?.value<25?'buy':a.sentiment?.value>75?'sell':'none',name:'F&G extreme'}}
+};
+
+const SIGNAL_NAMES=Object.keys(SIGNALS);
+
+// Pre-define logical combo templates (not random — these make trading sense)
+const COMBO_TEMPLATES=[
+  // Trend following combos
+  ['ema_stack','adx_strong','btc_aligned'],
+  ['ema_cross_9_21','macd_cross','vwap_position'],
+  ['ema_cross_21_50','trend_slope','obv_trend'],
+  ['ema_stack','higher_highs','volume_spike'],
+  ['ema_cross_9_21','adx_strong','higher_highs'],
+  ['trend_slope','chop_trending','btc_aligned'],
+  ['ema_stack','macd_cross','btc_momentum'],
+  // Mean reversion combos
+  ['rsi_extreme','bb_touch','volume_spike'],
+  ['stoch_cross','bb_touch','obv_trend'],
+  ['rsi_extreme','fib_support','hammer'],
+  ['bb_touch','pivot_support','three_soldiers'],
+  ['rsi_extreme','engulfing','btc_aligned'],
+  // Breakout combos
+  ['bb_squeeze','adx_strong','volume_spike'],
+  ['inside_bar','adx_strong','btc_aligned'],
+  ['bb_squeeze','macd_hist_flip','trend_slope'],
+  ['chop_trending','ema_cross_9_21','volume_spike'],
+  // Pattern combos
+  ['hammer','rsi_extreme','btc_aligned'],
+  ['engulfing','vwap_position','obv_trend'],
+  ['three_soldiers','ema_stack','adx_strong'],
+  ['inside_bar','bb_squeeze','trend_slope'],
+  // BTC-context combos
+  ['btc_aligned','ema_cross_9_21','rsi_mid_trend'],
+  ['btc_momentum','macd_cross','volume_spike'],
+  ['btc_aligned','trend_slope','higher_highs'],
+  // Pairs (simpler)
+  ['ema_stack','btc_aligned'],
+  ['rsi_extreme','bb_touch'],
+  ['macd_cross','adx_strong'],
+  ['hammer','btc_aligned'],
+  ['engulfing','volume_spike'],
+  ['bb_squeeze','volume_spike'],
+  ['trend_slope','obv_trend'],
+  ['higher_highs','btc_momentum'],
+  ['chop_trending','ema_cross_9_21'],
+  ['fib_support','rsi_extreme'],
+  ['pivot_support','hammer'],
+  ['news_positive','ema_stack'],
+  ['fear_greed','bb_touch']
+];
+
+// Combo performance tracker
+let comboTracker={
+  combos:{}, // comboId → {wins,losses,trades:[],returns:[],lastUpdated}
+  rankings:[], // sorted by consistency score
+  promotedCombo:null, // currently promoted to live
+  lastRankUpdate:0
+};
+
+function getComboId(signals){return signals.sort().join('+')}
+
+function evaluateCombo(comboSignals,analysis){
+  // Run each signal and check if they agree
+  const results=comboSignals.map(s=>SIGNALS[s]?SIGNALS[s](analysis):null).filter(Boolean);
+  if(!results.length)return null;
+
+  // All signals must agree on direction (or be 'none' which is abstain)
+  const buys=results.filter(r=>r.signal==='buy').length;
+  const sells=results.filter(r=>r.signal==='sell').length;
+  const active=buys+sells;
+
+  // Need majority agreement, no conflicts
+  if(buys>0&&sells>0)return null; // conflict = no trade
+  if(active<Math.ceil(results.length*0.6))return null; // not enough signals active
+
+  return buys>sells?'buy':'sell';
+}
+
+function comboShadowRecord(comboId,sym,side,price,atr){
+  if(!comboTracker.combos[comboId])comboTracker.combos[comboId]={wins:0,losses:0,trades:[],returns:[],signals:comboId.split('+'),lastUpdated:Date.now()};
+  const slDist=atr*2.0; // fixed 2 ATR SL for fair comparison
+  const tpDist=atr*2.0; // fixed 2 ATR TP (1:1 R:R for fair win rate comparison)
+  comboTracker.combos[comboId].trades.push({
+    sym,side,entry:price,sl:side==='buy'?price-slDist:price+slDist,
+    tp:side==='buy'?price+tpDist:price-tpDist,
+    time:Date.now(),resolved:false
+  });
+  // Cap at 200 trades per combo
+  if(comboTracker.combos[comboId].trades.length>200)comboTracker.combos[comboId].trades=comboTracker.combos[comboId].trades.slice(-200);
+}
+
+function comboShadowUpdate(sym,currentPrice){
+  for(const[id,data] of Object.entries(comboTracker.combos)){
+    for(const t of data.trades){
+      if(t.resolved||t.sym!==sym)continue;
+      const hitTP=(t.side==='buy'&&currentPrice>=t.tp)||(t.side==='sell'&&currentPrice<=t.tp);
+      const hitSL=(t.side==='buy'&&currentPrice<=t.sl)||(t.side==='sell'&&currentPrice>=t.sl);
+      const timeout=Date.now()-t.time>12*60*60*1000;
+      if(!hitTP&&!hitSL&&!timeout)continue;
+      t.resolved=true;
+      const pnlPct=hitTP?Math.abs((t.tp-t.entry)/t.entry)*100:hitSL?-Math.abs((t.sl-t.entry)/t.entry)*100:((t.side==='buy'?1:-1)*(currentPrice-t.entry)/t.entry)*100;
+      data.returns.push(pnlPct);
+      if(data.returns.length>200)data.returns.shift();
+      if(pnlPct>0)data.wins++;else data.losses++;
+      data.lastUpdated=Date.now();
+    }
+    // Clean resolved trades
+    data.trades=data.trades.filter(t=>!t.resolved);
+  }
+}
+
+function rankCombos(){
+  if(Date.now()-comboTracker.lastRankUpdate<60000)return; // rank every 1 min
+  comboTracker.lastRankUpdate=Date.now();
+
+  const rankings=[];
+  for(const[id,data] of Object.entries(comboTracker.combos)){
+    const total=data.wins+data.losses;
+    if(total<8)continue; // need 8+ resolved trades
+
+    const winRate=data.wins/total;
+    const returns=data.returns.slice(-50);
+    const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
+    const variance=returns.reduce((a,b)=>a+(b-mean)**2,0)/returns.length;
+    const std=Math.sqrt(variance);
+    const sharpe=std>0?mean/std:0;
+    const consistency=std>0?1/std:999; // lower volatility = higher consistency
+    const profitFactor=data.losses>0?(data.wins*Math.abs(mean>0?mean:0.01))/(data.losses*Math.abs(mean<0?mean:0.01)):data.wins;
+
+    rankings.push({
+      id,signals:data.signals||id.split('+'),
+      wins:data.wins,losses:data.losses,total,
+      winRate:Math.round(winRate*100),
+      avgReturn:Math.round(mean*100)/100,
+      sharpe:Math.round(sharpe*100)/100,
+      consistency:Math.round(consistency*100)/100,
+      profitFactor:Math.round(profitFactor*100)/100,
+      score:Math.round((winRate*40+Math.min(sharpe,3)*20+Math.min(consistency,10)*20+(mean>0?20:0))*100)/100
+    });
+  }
+
+  // Sort by CONSISTENCY first (low volatility), then profit factor
+  rankings.sort((a,b)=>b.score-a.score);
+  comboTracker.rankings=rankings;
+
+  // Auto-promote top combo if it has 20+ trades and positive everything
+  if(rankings.length&&rankings[0].total>=20&&rankings[0].winRate>=50&&rankings[0].sharpe>0){
+    const best=rankings[0];
+    if(!comboTracker.promotedCombo||comboTracker.promotedCombo.id!==best.id){
+      comboTracker.promotedCombo=best;
+      botLog('🏆 COMBO ENGINE: Promoted '+best.id+' (WR:'+best.winRate+'% Sharpe:'+best.sharpe+' trades:'+best.total+')');
+    }
+  }
+
+  // Demote if promoted combo drops below threshold
+  if(comboTracker.promotedCombo){
+    const promoted=rankings.find(r=>r.id===comboTracker.promotedCombo.id);
+    if(promoted&&promoted.total>=20&&promoted.profitFactor<1.2){
+      botLog('📉 COMBO ENGINE: Demoted '+promoted.id+' (profit factor '+promoted.profitFactor+' < 1.2)');
+      comboTracker.promotedCombo=rankings[0]?.profitFactor>=1.2?rankings[0]:null;
+    }
+  }
+}
+
+// Run combo testing on each analysis (called in tick loop)
+function runComboTests(analysis,sym){
+  if(!analysis||!analysis.price)return;
+  // Update existing combo shadow trades
+  comboShadowUpdate(sym,analysis.price);
+
+  // Test each combo template against current analysis
+  for(const combo of COMBO_TEMPLATES){
+    const decision=evaluateCombo(combo,analysis);
+    if(decision){
+      const id=getComboId([...combo]);
+      comboShadowRecord(id,sym,decision,analysis.price,analysis.atr);
+    }
+  }
+
+  // Rank every minute
+  rankCombos();
+}
+
 let tickCount=0;
 async function tick(){
   tickCount++;
@@ -1355,6 +1652,8 @@ async function tick(){
 
         // Update shadow trades for Sharpe tracking
         shadowUpdate(sym,price);
+        // Run strategy combo tests in background
+        runComboTests(a,sym);
 
         // Check open trades (check ALL open trades, not just this batch)
         for(const t of[...bot.openTrades]){
@@ -1866,6 +2165,7 @@ app.get('/api/bot/status',mw,async(req,res)=>{
     supervisor:{circuitBroken:supervisor.circuitBroken,mode:supervisor.mode,consecutiveLosses:supervisor.consecutiveLosses,consecutiveWins:supervisor.consecutiveWins,recentWinRate:supervisor.recentTrades.length>=5?Math.round(supervisor.recentTrades.slice(-10).filter(t=>t.isWin).length/Math.min(supervisor.recentTrades.length,10)*100):null,agentReport:getAgentReport(),recentAdjustments:supervisor.adjustments.slice(-5),autoTuneBal:lastAutoTuneBal},
     shadowStats:{active:shadowTrades.active.length,history:shadowTrades.history.length,wins:shadowTrades.stats.wins,losses:shadowTrades.stats.losses},
     learning:{confBuckets:shadowLearning.confBuckets,sideBias:shadowLearning.sideBias,insights:shadowLearning.insights},
+    combos:{rankings:comboTracker.rankings.slice(0,15),promoted:comboTracker.promotedCombo,totalCombos:Object.keys(comboTracker.combos).length,totalTrades:Object.values(comboTracker.combos).reduce((s,c)=>s+c.wins+c.losses,0)},
     // Market regime
     regime:{
       btc:btcAnalysisCache?{condition:btcAnalysisCache.condition,rsi:btcAnalysisCache.rsi,change1h:btcAnalysisCache.priceChange1h,change4h:btcAnalysisCache.priceChange4h}:null,
@@ -2218,6 +2518,20 @@ app.post('/api/bot/ai-advice',mw,async(req,res)=>{
 });
 
 app.get('/api/prices',async(req,res)=>{try{const r=await fetch('https://api.kucoin.com/api/v1/market/allTickers');const d=await safeJSON(r);if(d.code!=='200000')return res.status(502).json({error:'Feed error'});const prices={};for(const t of d.data.ticker)if(ALL_SYMBOLS.includes(t.symbol))prices[t.symbol]={price:+t.last,change:+t.changeRate*100,vol:+t.volValue};res.json({success:true,prices})}catch(e){res.status(500).json({error:e.message})}});
+
+// Combo rankings — full detail
+app.get('/api/bot/combos',mw,(req,res)=>{
+  rankCombos();
+  res.json({
+    success:true,
+    totalCombos:Object.keys(comboTracker.combos).length,
+    totalDemoTrades:Object.values(comboTracker.combos).reduce((s,c)=>s+c.wins+c.losses,0),
+    activeTrades:Object.values(comboTracker.combos).reduce((s,c)=>s+c.trades.filter(t=>!t.resolved).length,0),
+    promoted:comboTracker.promotedCombo,
+    rankings:comboTracker.rankings,
+    signalLibrary:SIGNAL_NAMES
+  });
+});
 
 app.get('/health',(_,res)=>res.json({status:'ok'}));
 
