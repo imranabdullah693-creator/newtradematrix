@@ -87,6 +87,7 @@
     <div class="ni" data-p="analysis">◉ Analysis</div>
     <div class="ni" data-p="backtest">↻ Backtest</div>
     <div class="ni" data-p="ai">✦ AI</div>
+    <div class="ni" data-p="combos">🧬 Combos</div>
     <div class="ns">Config</div>
     <div class="ni" data-p="settings">⚙ Settings</div>
     <div class="ni" data-p="connect">⊕ Connect</div>
@@ -105,6 +106,8 @@
       <div class="cd glass"><div class="ct">📐 Quant Stats (Shadow Trading)</div><div id="sharpe-content" style="font-size:10px;color:var(--t3)">Building track record...</div></div>
       <!-- Supervisor -->
       <div class="cd glass"><div class="ct">🛡 Supervisor</div><div id="sup-content" style="font-size:10px;color:var(--t3)">Monitoring...</div></div>
+      <!-- Combo Engine Mini -->
+      <div class="cd glass"><div class="ct">🧬 Combo Engine</div><div id="combo-mini" style="font-size:10px;color:var(--t3)">Testing combos in background...</div></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
       <div class="cd"><div class="ct">📋 Open Positions (<span id="open-count">0</span>)</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coin</th><th>Side</th><th>Position</th><th>Margin</th><th>Lev</th><th>Entry</th><th>Now</th><th>uPnL</th><th>SL%</th><th></th></tr></thead><tbody id="otb"><tr><td colspan="10" style="color:var(--t3);text-align:center;padding:16px">No open trades</td></tr></tbody></table></div></div>
       <div class="cd"><div class="ct">📰 Latest News</div><div id="news-mini" style="max-height:150px;overflow-y:auto;font-size:10px">Loading...</div></div>
@@ -124,6 +127,12 @@
     <div class="pg" id="pg-backtest"><div class="cd"><div class="ct">↻ Backtest</div><div class="fr"><span class="fl">Symbol</span><select class="fs" id="bsym"></select></div><div class="fr"><span class="fl">Agents needed</span><select class="fs" id="bagents"><option value="3">3 (aggressive)</option><option value="4" selected>4 (balanced)</option><option value="5">5 (conservative)</option><option value="6">6 (strict)</option></select></div><div class="fr"><span class="fl">Periods</span><select class="fs" id="bper"><option value="200">200</option><option value="500" selected>500</option><option value="1000">1000</option></select></div><button class="btn ba" id="btrun" onclick="doBacktest()">▶ Run</button><div id="btres" style="margin-top:12px"></div></div></div>
     <!-- AI -->
     <div class="pg" id="pg-ai"><div class="cd"><div class="ct">✦ AI Advisor (Claude)</div><p style="font-size:10px;color:var(--t2);margin-bottom:10px">Uses Anthropic Claude for on-demand analysis. ~$0.01/request.</p><div class="fr"><select class="fs" id="aisym"></select><input class="fi" id="aikey" type="password" placeholder="Anthropic API key" style="width:180px"/><button class="btn bp" onclick="getAdvice()">Get Advice</button></div><div class="ai-box" id="aibox">Select a coin and enter your Anthropic API key to get AI trading advice.</div></div></div>
+    <!-- COMBOS -->
+    <div class="pg" id="pg-combos">
+      <div class="cd glass"><div class="ct">🧬 Strategy Combination Engine</div><p style="font-size:10px;color:var(--t2);margin-bottom:10px">Testing 37 strategy combinations silently in background. Each combo uses different indicator combinations. The best performing, most consistent combo gets promoted to live trading.</p><div id="combo-stats" style="font-size:10px;color:var(--t3)">Collecting data...</div></div>
+      <div class="cd"><div class="ct">🏆 Promoted Combo (Used for Live Trading)</div><div id="promoted-combo" style="font-size:10px;color:var(--t3)">No combo promoted yet — need 20+ trades with positive Sharpe</div></div>
+      <div class="cd"><div class="ct">📊 Rankings (Sorted by Consistency + Profit)</div><div id="combo-rankings" style="overflow-x:auto;font-size:10px;color:var(--t3)">Waiting for data...</div></div>
+    </div>
     <!-- SETTINGS -->
     <div class="pg" id="pg-settings"><div class="cd"><div class="ct">⚙ Settings</div>
       <div class="fr"><span class="fl">Mode</span><select class="fs" id="smode"><option value="paper">Paper</option><option value="live">Live</option></select></div>
@@ -192,7 +201,7 @@ window.onload=async()=>{
 }
 
 // Nav
-document.querySelectorAll('.ni[data-p]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));el.classList.add('on');const pg=document.getElementById('pg-'+el.dataset.p);if(pg)pg.classList.add('act');document.getElementById('sb').classList.remove('open');if(el.dataset.p==='chart')loadChart();if(el.dataset.p==='news')refreshNews()});
+document.querySelectorAll('.ni[data-p]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));el.classList.add('on');const pg=document.getElementById('pg-'+el.dataset.p);if(pg)pg.classList.add('act');document.getElementById('sb').classList.remove('open');if(el.dataset.p==='chart')loadChart();if(el.dataset.p==='news')refreshNews();if(el.dataset.p==='combos')refreshCombos()});
 
 function init(){refresh();setInterval(refresh,5000);refreshWallet();setInterval(refreshWallet,30000)}
 
@@ -329,6 +338,16 @@ async function refresh(){
       supHtml+='</div>';
     }
     document.getElementById('sup-content').innerHTML=supHtml;
+  }
+
+  // Combo engine mini
+  if(d.combos){
+    const cm=d.combos;
+    let cmH='<div style="display:flex;gap:10px;font-size:10px;margin-bottom:6px"><span>Combos: <strong>'+cm.totalCombos+'</strong></span><span>Demo trades: <strong>'+cm.totalTrades+'</strong></span></div>';
+    if(cm.promoted){cmH+='<div style="padding:6px 8px;background:var(--gd);border-radius:4px;font-family:var(--mono);font-size:9px;color:var(--gr)">🏆 '+cm.promoted.signals.join(' + ')+' (WR:'+cm.promoted.winRate+'% Sharpe:'+cm.promoted.sharpe+')</div>'}
+    else{cmH+='<div style="font-size:9px;color:var(--t3)">No combo promoted yet — collecting more data...</div>'}
+    if(cm.rankings&&cm.rankings.length>=3){cmH+='<div style="margin-top:6px;font-size:9px;color:var(--t3)">Top 3: '+cm.rankings.slice(0,3).map((r,i)=>'<span style="color:var(--t2)">'+(i+1)+'. '+r.signals.join('+')+' ('+r.winRate+'%)</span>').join(' | ')+'</div>'}
+    document.getElementById('combo-mini').innerHTML=cmH;
   }
 
   // News mini
@@ -485,6 +504,26 @@ async function doBacktest(){document.getElementById('btrun').disabled=true;docum
 // AI Advice
 async function getAdvice(){const sym=document.getElementById('aisym').value;const key=document.getElementById('aikey').value.trim();if(!key)return alert('Enter Anthropic API key');document.getElementById('aibox').textContent='Thinking...';
   const d=await api('/api/bot/ai-advice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym,anthropicKey:key})});document.getElementById('aibox').textContent=d.advice||d.error||'No response'}
+
+// Combo rankings page
+async function refreshCombos(){
+  const d=await api('/api/bot/combos');if(!d.success)return;
+  document.getElementById('combo-stats').innerHTML='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(80px,1fr))"><div class="st"><div class="sl">Combos</div><div class="sv" style="font-size:14px">'+d.totalCombos+'</div></div><div class="st"><div class="sl">Demo Trades</div><div class="sv" style="font-size:14px">'+d.totalDemoTrades+'</div></div><div class="st"><div class="sl">Active</div><div class="sv" style="font-size:14px">'+d.activeTrades+'</div></div><div class="st"><div class="sl">Signals</div><div class="sv" style="font-size:14px">'+d.signalLibrary.length+'</div></div></div>';
+  if(d.promoted){
+    const p=d.promoted;
+    document.getElementById('promoted-combo').innerHTML='<div style="padding:10px;border-radius:6px;background:var(--gd);border:1px solid rgba(0,230,118,0.2)"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--gr)">'+p.signals.map(s=>s.replace(/_/g,' ')).join(' + ')+'</div><div style="font-size:10px;color:var(--t2);margin-top:4px">WR: '+p.winRate+'% | Sharpe: '+p.sharpe+' | Avg: '+(p.avgReturn>=0?'+':'')+p.avgReturn+'% | Consistency: '+p.consistency+' | PF: '+p.profitFactor+' | Trades: '+p.total+'</div></div>';
+  }
+  if(d.rankings&&d.rankings.length){
+    let h='<table class="tbl"><thead><tr><th>#</th><th>Combo</th><th>W/L</th><th>WR%</th><th>Avg</th><th>Sharpe</th><th>PF</th><th>Score</th></tr></thead><tbody>';
+    d.rankings.forEach((r,i)=>{
+      const wrCol=r.winRate>=55?'var(--gr)':r.winRate>=45?'var(--am)':'var(--re)';
+      const isPromoted=d.promoted&&d.promoted.id===r.id;
+      h+='<tr style="'+(isPromoted?'background:var(--gd);':'')+'"><td style="color:var(--bl);font-weight:700">'+(i+1)+'</td><td style="font-size:9px">'+r.signals.map(s=>s.replace(/_/g,' ')).join(' + ')+(isPromoted?' 🏆':'')+'</td><td>'+r.wins+'/'+r.losses+'</td><td style="color:'+wrCol+'">'+r.winRate+'%</td><td class="'+(r.avgReturn>=0?'up':'dn')+'">'+(r.avgReturn>=0?'+':'')+r.avgReturn+'%</td><td>'+r.sharpe+'</td><td>'+r.profitFactor+'</td><td style="font-weight:600">'+r.score+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    document.getElementById('combo-rankings').innerHTML=h;
+  }
+}
 
 // Bot controls
 async function startBot(){await api('/api/bot/start',{method:'POST'});refresh()}
