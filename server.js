@@ -1687,17 +1687,65 @@ async function tick(){
         // Run strategy combo tests in background
         runComboTests(a,sym);
 
-        // Check open trades (check ALL open trades, not just this batch)
+        // Check open trades — SMART EXITS
         for(const t of[...bot.openTrades]){
           if(t.symbol!==sym)continue;
+          const dir=t.side==='buy'?1:-1;
+          const pnlPct=((price-t.entryPrice)/t.entryPrice)*100*dir;
+          const tpDist_t=Math.abs(t.tp-t.entryPrice);
+          const slDist_t=Math.abs(t.sl-t.entryPrice);
+          const progressToTP=tpDist_t>0?Math.abs(price-t.entryPrice)/tpDist_t:0;
+          const tradeAge=Date.now()-new Date(t.openTime).getTime();
+          const hoursOpen=tradeAge/(1000*60*60);
+
+          // 1. TRAILING STOP (existing)
           if(bot.trailingStop&&t.trailingSl!==null){
             if(t.side==='buy'){if(price>(t.highSince||t.entryPrice))t.highSince=price;const ns=t.highSince-atr*bot.trailATR;if(ns>t.trailingSl)t.trailingSl=ns;if(price<=t.trailingSl){closeTrade(t,price,'trailing_sl');continue}}
             else{if(price<(t.lowSince||t.entryPrice))t.lowSince=price;const ns=t.lowSince+atr*bot.trailATR;if(ns<t.trailingSl)t.trailingSl=ns;if(price>=t.trailingSl){closeTrade(t,price,'trailing_sl');continue}}
           }
+
+          // 2. HARD SL/TP (always check)
           if(t.side==='buy'&&price<=t.sl){closeTrade(t,price,'stop_loss');continue}
           if(t.side==='sell'&&price>=t.sl){closeTrade(t,price,'stop_loss');continue}
           if(t.side==='buy'&&price>=t.tp){closeTrade(t,price,'take_profit');continue}
           if(t.side==='sell'&&price<=t.tp){closeTrade(t,price,'take_profit');continue}
+
+          // 3. MOVE SL TO BREAKEVEN — after reaching 50% of TP
+          if(progressToTP>=0.5&&!t.slMovedToBE){
+            const newSL=t.entryPrice+(dir*atr*0.1); // slightly above entry to cover fees
+            if(t.side==='buy'&&newSL>t.sl){t.sl=newSL;t.slMovedToBE=true;botLog(`${t.symbol.replace('-USDT','')} SL→BE: moved stop to $${newSL.toFixed(4)} (50% to TP)`)}
+            if(t.side==='sell'&&newSL<t.sl){t.sl=newSL;t.slMovedToBE=true;botLog(`${t.symbol.replace('-USDT','')} SL→BE: moved stop to $${newSL.toFixed(4)} (50% to TP)`)}
+          }
+
+          // 4. MOMENTUM EXIT — in profit but momentum turning against us
+          if(pnlPct>0.3&&progressToTP>=0.3){
+            const rsi=a.rsi;
+            const macdFlip=(t.side==='buy'&&a.macdHist<0&&a.prevMacdHist>0)||(t.side==='sell'&&a.macdHist>0&&a.prevMacdHist<0);
+            const rsiAgainst=(t.side==='buy'&&rsi>70)||(t.side==='sell'&&rsi<30);
+            if(macdFlip||rsiAgainst){
+              closeTrade(t,price,'smart_exit_momentum');
+              botLog(`${t.symbol.replace('-USDT','')} SMART EXIT: booked +${pnlPct.toFixed(2)}% — momentum fading (${macdFlip?'MACD flip':'RSI extreme'})`);
+              continue;
+            }
+          }
+
+          // 5. TIME-BASED PROFIT BOOKING — if in profit for 3+ hours but stalling
+          if(hoursOpen>=3&&pnlPct>0.5&&progressToTP<0.7){
+            // Price has been in profit for 3 hours but hasn't reached 70% of TP — book it
+            closeTrade(t,price,'smart_exit_time');
+            botLog(`${t.symbol.replace('-USDT','')} SMART EXIT: booked +${pnlPct.toFixed(2)}% after ${hoursOpen.toFixed(1)}h — stalling before TP`);
+            continue;
+          }
+
+          // 6. REVERSAL EXIT — if BTC suddenly dumps/pumps against our trade
+          if(a.btc&&pnlPct>0){
+            const btcAgainst=(t.side==='buy'&&a.btc.priceChange1h<-1.5)||(t.side==='sell'&&a.btc.priceChange1h>1.5);
+            if(btcAgainst){
+              closeTrade(t,price,'smart_exit_btc_reversal');
+              botLog(`${t.symbol.replace('-USDT','')} SMART EXIT: booked +${pnlPct.toFixed(2)}% — BTC moving against us (1h: ${a.btc.priceChange1h.toFixed(1)}%)`);
+              continue;
+            }
+          }
         }
 
         // ═══ SUPERVISOR CHECK ═══
