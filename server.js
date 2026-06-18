@@ -1472,11 +1472,42 @@ const COMBO_TEMPLATES=[
 
 // Combo performance tracker
 let comboTracker={
-  combos:{}, // comboId → {wins,losses,trades:[],returns:[],lastUpdated}
-  rankings:[], // sorted by consistency score
-  promotedCombo:null, // currently promoted to live
+  combos:{},
+  rankings:[],
+  promotedCombo:null,
   lastRankUpdate:0
 };
+
+// Persist combo data to disk
+function saveComboData(){
+  try{
+    const data={combos:{},promotedCombo:comboTracker.promotedCombo,rankings:comboTracker.rankings};
+    // Save only resolved stats, not active trades (too large)
+    for(const[id,c] of Object.entries(comboTracker.combos)){
+      data.combos[id]={wins:c.wins,losses:c.losses,returns:c.returns.slice(-100),signals:c.signals,lastUpdated:c.lastUpdated,trades:c.trades.filter(t=>!t.resolved).slice(-50)};
+    }
+    fs.writeFileSync('.combo-data.json',JSON.stringify(data));
+  }catch(e){console.log('Combo save err:',e.message)}
+}
+
+// Load combo data from disk
+function loadComboData(){
+  try{
+    if(!fs.existsSync('.combo-data.json'))return;
+    const data=JSON.parse(fs.readFileSync('.combo-data.json','utf8'));
+    if(data.combos){
+      for(const[id,c] of Object.entries(data.combos)){
+        comboTracker.combos[id]={...c,trades:c.trades||[]};
+      }
+    }
+    if(data.promotedCombo)comboTracker.promotedCombo=data.promotedCombo;
+    if(data.rankings)comboTracker.rankings=data.rankings;
+    const totalTrades=Object.values(comboTracker.combos).reduce((s,c)=>s+c.wins+c.losses,0);
+    console.log('Combo data loaded:',Object.keys(comboTracker.combos).length,'combos,',totalTrades,'trades');
+    if(comboTracker.promotedCombo)console.log('Promoted combo:',comboTracker.promotedCombo.id,'WR:'+comboTracker.promotedCombo.winRate+'%');
+  }catch(e){console.log('Combo load err:',e.message)}
+}
+loadComboData();
 
 function getComboId(signals){return signals.sort().join('+')}
 
@@ -1563,6 +1594,7 @@ function rankCombos(){
   // Sort by CONSISTENCY first (low volatility), then profit factor
   rankings.sort((a,b)=>b.score-a.score);
   comboTracker.rankings=rankings;
+  saveComboData(); // persist to disk
 
   // Auto-promote top combo if it has 20+ trades and positive everything
   if(rankings.length&&rankings[0].total>=20&&rankings[0].winRate>=50&&rankings[0].sharpe>0){
@@ -1696,35 +1728,56 @@ async function tick(){
         if(bot.openTrades.length>=bot.maxOpenTrades){botLog(`${coin} SKIP: max open trades ${bot.openTrades.length}/${bot.maxOpenTrades}`);continue}
         if(bot.openTrades.filter(t=>t.symbol===sym).length>=2){botLog(`${coin} SKIP: already 2 open trades for this coin`);continue}
 
-        // ═══ COUNCIL VOTE ═══
+        // ═══ TRADING DECISION — Promoted Combo (primary) or Council (fallback) ═══
         const council=councilVote(a,bot.requiredAgents);
         bot.lastCouncil[sym]=council;
 
-        // Always log the result so user can see bot is working
-        if(council.decision!=='hold'){
-          botLog(`${coin} → ${council.decision.toUpperCase()} | ${council.buyCount}buy(${council.buyScore||0}pts)/${council.sellCount}sell(${council.sellScore||0}pts) | conf:${council.confidence}% | HTF:${council.htf||'?'}${dailyTargetHit?' 🎯':''}`);
-        }else if(council.blockReason){
-          botLog(`${coin} ${council.blockReason}`);
-        }else if(Math.max(council.buyScore||0,council.sellScore||0)>=4){
-          botLog(`${coin} ${council.buyCount}b(${council.buyScore||0}pts)/${council.sellCount}s(${council.sellScore||0}pts) T1:${council.buyT1||0}b/${council.sellT1||0}s — need ${council.weightThreshold||8}pts`);
+        // Determine trade decision: promoted combo takes priority
+        let tradeDecision=null;
+        let tradeSource='council';
+        let tradeConfidence=0;
+
+        if(comboTracker.promotedCombo&&comboTracker.promotedCombo.winRate>=50){
+          // USE PROMOTED COMBO — proven profitable strategy
+          const comboSignals=comboTracker.promotedCombo.signals||comboTracker.promotedCombo.id.split('+');
+          const comboDecision=evaluateCombo(comboSignals,a);
+          if(comboDecision){
+            tradeDecision=comboDecision;
+            tradeSource='combo:'+comboTracker.promotedCombo.id;
+            tradeConfidence=comboTracker.promotedCombo.winRate; // use historical win rate as confidence
+            botLog(`${coin} 🧬 COMBO ${comboDecision.toUpperCase()} | ${comboSignals.join('+')} | WR:${comboTracker.promotedCombo.winRate}% | Sharpe:${comboTracker.promotedCombo.sharpe}`);
+          }
         }
 
-        if(council.decision==='hold')continue;
-
-        // Shadow record EVERY buy/sell signal (even if we skip it) — builds Sharpe data
-        const _slD=atr*bot.slATR,_tpD=atr*bot.tpATR;
-        const _sl=council.decision==='buy'?price-_slD:price+_slD;
-        const _tp=council.decision==='buy'?price+_tpD:price-_tpD;
-        shadowRecord(sym,council.decision,price,_sl,_tp,council.confidence,'signal');
-
-        if(council.confidence<confThreshold){
-          botLog(`${coin} ${council.decision} conf ${council.confidence}% < ${confThreshold}%${dailyTargetHit?' (raised after 🎯)':''}`);
+        // FALLBACK: use council if no promoted combo or combo didn't fire
+        if(!tradeDecision&&council.decision!=='hold'){
+          tradeDecision=council.decision;
+          tradeSource='council';
+          tradeConfidence=council.confidence;
+          botLog(`${coin} → ${council.decision.toUpperCase()} | ${council.buyCount}buy(${council.buyScore||0}pts)/${council.sellCount}sell(${council.sellScore||0}pts) | conf:${council.confidence}% | HTF:${council.htf||'?'}${dailyTargetHit?' 🎯':''}`);
+        }else if(!tradeDecision){
+          // Log council holds
+          if(council.blockReason)botLog(`${coin} ${council.blockReason}`);
           continue;
         }
 
-        // ═══ CORRELATION FILTER — don't stack same-group trades ═══
-        if(!checkCorrelation(sym,council.decision)){
-          botLog(`${coin} SKIP: correlated trade already open in ${getCorrelationGroup(sym)} group`);
+        if(!tradeDecision)continue;
+
+        // Shadow record
+        const _slD=atr*bot.slATR,_tpD=atr*bot.tpATR;
+        const _sl=tradeDecision==='buy'?price-_slD:price+_slD;
+        const _tp=tradeDecision==='buy'?price+_tpD:price-_tpD;
+        shadowRecord(sym,tradeDecision,price,_sl,_tp,tradeConfidence,tradeSource);
+
+        // Confidence check (combo uses win rate, council uses vote confidence)
+        if(tradeConfidence<confThreshold){
+          botLog(`${coin} ${tradeDecision} conf ${tradeConfidence}% < ${confThreshold}%${dailyTargetHit?' (raised after 🎯)':''} [${tradeSource}]`);
+          continue;
+        }
+
+        // ═══ CORRELATION FILTER ═══
+        if(!checkCorrelation(sym,tradeDecision)){
+          botLog(`${coin} SKIP: correlated trade open in ${getCorrelationGroup(sym)} group`);
           continue;
         }
 
@@ -1750,11 +1803,11 @@ async function tick(){
         const htf=a.htf||{};
         if(htf.bias&&htf.bias.includes('strong_bullish'))trendBias=Math.min(1,trendBias+0.3);
         else if(htf.bias&&htf.bias.includes('strong_bearish'))trendBias=Math.max(-1,trendBias-0.3);
-        const mc=monteCarloSim(price,slDist,tpDist,council.decision,atr,trendBias);
+        const mc=monteCarloSim(price,slDist,tpDist,tradeDecision,atr,trendBias);
 
         // ═══ TP PROBABILITY (hybrid: rule-based + Monte Carlo) ═══
-        const htfAligned=(council.decision==='buy'&&htf.bias&&htf.bias.includes('bullish'))||
-                         (council.decision==='sell'&&htf.bias&&htf.bias.includes('bearish'));
+        const htfAligned=(tradeDecision==='buy'&&htf.bias&&htf.bias.includes('bullish'))||
+                         (tradeDecision==='sell'&&htf.bias&&htf.bias.includes('bearish'));
         const htfStrong=htf.bias&&htf.bias.includes('strong');
         let tpProb=50;
         if(htfAligned)tpProb+=15;
@@ -1764,8 +1817,8 @@ async function tick(){
         if(tpDist/slDist>=2)tpProb+=5;
         if(tpDist/slDist<0.5)tpProb-=10; // only penalize really bad RR
         if(a.btc){
-          const btcAgrees=(council.decision==='buy'&&a.btc.condition.includes('bullish'))||
-                          (council.decision==='sell'&&a.btc.condition.includes('bearish'));
+          const btcAgrees=(tradeDecision==='buy'&&a.btc.condition.includes('bullish'))||
+                          (tradeDecision==='sell'&&a.btc.condition.includes('bearish'));
           if(btcAgrees)tpProb+=10;
           if(!btcAgrees&&!a.btc.condition.includes('neutral'))tpProb-=15;
         }
@@ -1774,14 +1827,14 @@ async function tick(){
 
         // Shadow learning adjustment: if shadow data shows one side winning more, adjust
         if(shadowLearning.preferredSide){
-          if(council.decision===shadowLearning.preferredSide)tpProb+=5; // bonus for winning side
+          if(tradeDecision===shadowLearning.preferredSide)tpProb+=5; // bonus for winning side
           else tpProb-=5; // penalty for losing side
         }
 
         if(tpProb<tpProbThreshold){
           botLog(`${coin} SKIP: TP ${tpProb}% < ${tpProbThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${dailyTargetHit?' 🎯':''}`);
           // Still record as shadow trade for Sharpe tracking
-          shadowRecord(sym,council.decision,price,price-(council.decision==='buy'?slDist:-slDist),price+(council.decision==='buy'?tpDist:-tpDist),council.confidence,'Skip');
+          shadowRecord(sym,tradeDecision,price,price-(tradeDecision==='buy'?slDist:-slDist),price+(tradeDecision==='buy'?tpDist:-tpDist),council.confidence,'Skip');
           continue;
         }
 
@@ -1789,15 +1842,15 @@ async function tick(){
         const qg=quantGrade(council,tpProb,regime,mc,a.btc);
         if(qg.grade==='Reject'){
           botLog(`${coin} REJECT: quant score ${qg.score} — not worth the risk`);
-          shadowRecord(sym,council.decision,price,price-(council.decision==='buy'?slDist:-slDist),price+(council.decision==='buy'?tpDist:-tpDist),council.confidence,qg.grade);
+          shadowRecord(sym,tradeDecision,price,price-(tradeDecision==='buy'?slDist:-slDist),price+(tradeDecision==='buy'?tpDist:-tpDist),council.confidence,qg.grade);
           continue;
         }
 
-        const sl=council.decision==='buy'?price-slDist:price+slDist;
-        const tp=council.decision==='buy'?price+tpDist:price-tpDist;
+        const sl=tradeDecision==='buy'?price-slDist:price+slDist;
+        const tp=tradeDecision==='buy'?price+tpDist:price-tpDist;
 
         // Record shadow trade (even if we execute — tracks all signals)
-        shadowRecord(sym,council.decision,price,sl,tp,council.confidence,qg.grade);
+        shadowRecord(sym,tradeDecision,price,sl,tp,council.confidence,qg.grade);
 
         botLog(`${coin} ✓ Grade:${qg.grade}(${qg.score}) | TP:${tpProb}% | MC:${mc.tpProb}%tp | regime:${regime.regime} | R:R=${(tpDist/slDist).toFixed(1)} | exp:${mc.expectedReturn}%${dailyTargetHit?' 🎯 BONUS':''}`);
 
@@ -1892,8 +1945,8 @@ async function tick(){
 
         // Execute
         if(bot.mode==='paper'){
-          if(council.decision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,'spot',autoLev);
-          else if(council.decision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council,autoLev);
+          if(tradeDecision==='buy')paperBuy(sym,price,posUSD,sl,tp,council.confidence,council,'spot',autoLev);
+          else if(tradeDecision==='sell')paperSell(sym,price,posUSD,sl,tp,council.confidence,council,autoLev);
         }else{
           // LIVE MODE
           const useFutures=bot.tradingType==='futures'||bot.tradingType==='combined';
@@ -1903,17 +1956,17 @@ async function tick(){
             if(useFutures){
               // FUTURES — supports both long and short with leverage
               lev=bot.leverage;  // use configured leverage
-              orderResult=await futuresOrder(council.decision,sym,posUSD,price,lev);
+              orderResult=await futuresOrder(tradeDecision,sym,posUSD,price,lev);
               fillQty=orderResult.qty;
               realUSD=posUSD;  // notional position value
-              botLog(`LIVE FUTURES ${council.decision.toUpperCase()} ${sym} @$${fillPrice.toFixed(4)} | notional:$${realUSD.toFixed(2)} | lev:${lev}x | contracts:${orderResult.contracts} | margin:$${(realUSD/lev).toFixed(2)}`);
+              botLog(`LIVE FUTURES ${tradeDecision.toUpperCase()} ${sym} @$${fillPrice.toFixed(4)} | notional:$${realUSD.toFixed(2)} | lev:${lev}x | contracts:${orderResult.contracts} | margin:$${(realUSD/lev).toFixed(2)}`);
             }else{
               // SPOT — only long
-              if(council.decision==='sell'){
+              if(tradeDecision==='sell'){
                 botLog(`${coin} SKIP: cannot short on spot. Switch to Futures/Combined mode.`);
                 continue;
               }
-              orderResult=await liveOrder(council.decision,sym,posUSD,price);
+              orderResult=await liveOrder(tradeDecision,sym,posUSD,price);
               fillQty=orderResult.qty||(posUSD/price);
               realUSD=fillPrice*fillQty;
               lev=1;
@@ -1924,7 +1977,7 @@ async function tick(){
               id:crypto.randomUUID().slice(0,8),
               orderId:orderResult.orderId,
               symbol:sym,
-              side:council.decision,
+              side:tradeDecision,
               type:useFutures?'futures':'spot',
               leverage:lev,
               entryPrice:fillPrice,
