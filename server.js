@@ -1597,7 +1597,9 @@ function rankCombos(){
   saveComboData(); // persist to disk
 
   // Auto-promote top combo if it has 20+ trades and positive everything
-  if(rankings.length&&rankings[0].total>=20&&rankings[0].winRate>=50&&rankings[0].sharpe>0){
+  if(rankings.length&&rankings[0].total>=30&&rankings[0].winRate>=55&&rankings[0].winRate<95&&rankings[0].sharpe>0.3){
+    // WR cap at 95% — anything higher is likely inflated/too few trades
+    // Sharpe must be >0.3 not just >0
     const best=rankings[0];
     if(!comboTracker.promotedCombo||comboTracker.promotedCombo.id!==best.id){
       comboTracker.promotedCombo=best;
@@ -1818,7 +1820,7 @@ async function tick(){
         shadowRecord(sym,tradeDecision,price,_sl,_tp,tradeConfidence,tradeSource);
 
         // Confidence check (combo uses win rate, council uses vote confidence)
-        if(tradeConfidence<confThreshold){
+        if(tradeConfidence<confThreshold&&!tradeSource.startsWith('combo:')){
           botLog(`${coin} ${tradeDecision} conf ${tradeConfidence}% < ${confThreshold}%${dailyTargetHit?' (raised after 🎯)':''} [${tradeSource}]`);
           continue;
         }
@@ -1880,10 +1882,15 @@ async function tick(){
         }
 
         if(tpProb<tpProbThreshold){
-          botLog(`${coin} SKIP: TP ${tpProb}% < ${tpProbThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${dailyTargetHit?' 🎯':''}`);
-          // Still record as shadow trade for Sharpe tracking
-          shadowRecord(sym,tradeDecision,price,price-(tradeDecision==='buy'?slDist:-slDist),price+(tradeDecision==='buy'?tpDist:-tpDist),council.confidence,'Skip');
-          continue;
+          // Combo trades get a lower MC bar (30%) — combo already proved itself with real data
+          const comboOverride=tradeSource.startsWith('combo:')&&comboTracker.promotedCombo&&comboTracker.promotedCombo.total>=30&&comboTracker.promotedCombo.winRate>=55;
+          const effectiveThreshold=comboOverride?30:tpProbThreshold;
+          if(tpProb<effectiveThreshold){
+            botLog(`${coin} SKIP: TP ${tpProb}% < ${effectiveThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${comboOverride?' [combo bar:30%]':''}${dailyTargetHit?' 🎯':''}`);
+            shadowRecord(sym,tradeDecision,price,price-(tradeDecision==='buy'?slDist:-slDist),price+(tradeDecision==='buy'?tpDist:-tpDist),tradeConfidence,'Skip');
+            continue;
+          }
+          if(comboOverride)botLog(`${coin} 🧬 COMBO PASS: TP ${tpProb}% passed reduced bar (30%) — combo WR:${comboTracker.promotedCombo.winRate}%`);
         }
 
         // ═══ QUANT GRADE — A+/A/B/C/Reject ═══
