@@ -1396,7 +1396,7 @@ const SIGNALS={
   ema_stack(a){return{signal:a.ema9>a.ema21&&a.ema21>a.ema50?'buy':a.ema9<a.ema21&&a.ema21<a.ema50?'sell':'none',name:'EMA stack'}},
   macd_cross(a){return{signal:a.macdLine>a.macdSignal?'buy':a.macdLine<a.macdSignal?'sell':'none',name:'MACD cross'}},
   macd_hist_flip(a){return{signal:a.macdHist>0&&a.prevMacdHist<=0?'buy':a.macdHist<0&&a.prevMacdHist>=0?'sell':'none',name:'MACD hist flip'}},
-  rsi_extreme(a){return{signal:a.rsi<30?'buy':a.rsi>70?'sell':'none',name:'RSI extreme'}},
+  rsi_extreme(a){return{signal:a.rsi<35?'buy':a.rsi>65?'sell':'none',name:'RSI extreme'}},
   rsi_mid_trend(a){return{signal:a.rsi>50&&a.rsi<65&&a.condition.includes('bullish')?'buy':a.rsi<50&&a.rsi>35&&a.condition.includes('bearish')?'sell':'none',name:'RSI mid-trend'}},
   bb_touch(a){if(!a.bbUpper||!a.bbLower)return{signal:'none',name:'BB touch'};return{signal:a.price<=a.bbLower?'buy':a.price>=a.bbUpper?'sell':'none',name:'BB touch'}},
   bb_squeeze(a){if(!a.bbUpper||!a.bbLower)return{signal:'none',name:'BB squeeze'};const w=((a.bbUpper-a.bbLower)/a.bbSma)*100;return{signal:w<3?'buy':'none',name:'BB squeeze'}},
@@ -1405,8 +1405,8 @@ const SIGNALS={
   vwap_position(a){return{signal:a.price>a.vwap?'buy':a.price<a.vwap?'sell':'none',name:'VWAP position'}},
   obv_trend(a){return{signal:a.obvTrend==='bullish'?'buy':a.obvTrend==='bearish'?'sell':'none',name:'OBV trend'}},
   volume_spike(a){return{signal:a.volTrend==='high'?'buy':'none',name:'Volume spike'}},
-  fib_support(a){if(!a.support||!a.price)return{signal:'none',name:'Fib support'};const dist=Math.abs(a.price-a.support)/a.price;return{signal:dist<0.01?'buy':'none',name:'Fib support'}},
-  fib_resist(a){if(!a.resistance||!a.price)return{signal:'none',name:'Fib resistance'};const dist=Math.abs(a.price-a.resistance)/a.price;return{signal:dist<0.01?'sell':'none',name:'Fib resistance'}},
+  fib_support(a){if(!a.support||!a.price)return{signal:'none',name:'Fib support'};const dist=Math.abs(a.price-a.support)/a.price;return{signal:dist<0.02?'buy':'none',name:'Fib support'}},
+  fib_resist(a){if(!a.resistance||!a.price)return{signal:'none',name:'Fib resistance'};const dist=Math.abs(a.price-a.resistance)/a.price;return{signal:dist<0.02?'sell':'none',name:'Fib resistance'}},
   golden_pocket(a){return{signal:a.inGoldenPocket?'buy':'none',name:'Golden pocket'}},
   higher_highs(a){return{signal:a.hhll?.trend==='uptrend'?'buy':a.hhll?.trend==='downtrend'?'sell':'none',name:'HH/HL pattern'}},
   trend_slope(a){return{signal:a.slope>0.1?'buy':a.slope<-0.1?'sell':'none',name:'Trend slope'}},
@@ -1771,7 +1771,7 @@ async function tick(){
 
         // After daily target: don't stop — just raise the bar significantly
         const confThreshold=dailyTargetHit?85:70;
-        const tpProbThreshold=dailyTargetHit?85:65;
+        const tpProbThreshold=dailyTargetHit?75:50;
 
         // Limits
         if(bot.cooldown[sym]&&Date.now()-bot.cooldown[sym]<300000){continue}
@@ -1784,34 +1784,31 @@ async function tick(){
 
         // Determine trade decision: promoted combo takes priority
         let tradeDecision=null;
-        let tradeSource='council';
+        let tradeSource='none';
         let tradeConfidence=0;
 
-        if(comboTracker.promotedCombo&&comboTracker.promotedCombo.winRate>=50){
-          // USE PROMOTED COMBO — proven profitable strategy
-          const comboSignals=comboTracker.promotedCombo.signals||comboTracker.promotedCombo.id.split('+');
-          const comboDecision=evaluateCombo(comboSignals,a);
-          if(comboDecision){
-            tradeDecision=comboDecision;
-            tradeSource='combo:'+comboTracker.promotedCombo.id;
-            tradeConfidence=comboTracker.promotedCombo.winRate; // use historical win rate as confidence
-            botLog(`${coin} 🧬 COMBO ${comboDecision.toUpperCase()} | ${comboSignals.join('+')} | WR:${comboTracker.promotedCombo.winRate}% | Sharpe:${comboTracker.promotedCombo.sharpe}`);
+        // ONLY PROFITABLE COMBOS TRADE — no council fallback
+        const topCombos=comboTracker.rankings.filter(r=>r.total>=30&&r.winRate>=55&&r.winRate<95&&r.sharpe>0.3).slice(0,5);
+        for(const combo of topCombos){
+          const signals=combo.signals||combo.id.split('+');
+          const decision=evaluateCombo(signals,a);
+          if(decision){
+            tradeDecision=decision;
+            tradeSource='combo:'+combo.id;
+            tradeConfidence=combo.winRate;
+            botLog(`${coin} 🧬 COMBO ${decision.toUpperCase()} | ${signals.join('+')} | WR:${combo.winRate}% | Sharpe:${combo.sharpe} | #${topCombos.indexOf(combo)+1} of ${topCombos.length}`);
+            break;
           }
         }
 
-        // FALLBACK: use council if no promoted combo or combo didn't fire
-        if(!tradeDecision&&council.decision!=='hold'){
-          tradeDecision=council.decision;
-          tradeSource='council';
-          tradeConfidence=council.confidence;
-          botLog(`${coin} → ${council.decision.toUpperCase()} | ${council.buyCount}buy(${council.buyScore||0}pts)/${council.sellCount}sell(${council.sellScore||0}pts) | conf:${council.confidence}% | HTF:${council.htf||'?'}${dailyTargetHit?' 🎯':''}`);
-        }else if(!tradeDecision){
-          // Log council holds
-          if(council.blockReason)botLog(`${coin} ${council.blockReason}`);
+        // NO FALLBACK — if no combo fired, skip this coin entirely
+        if(!tradeDecision){
+          // Still run council for logging/combo testing, but DON'T trade on it
+          if(council.decision!=='hold'&&Math.max(council.buyScore||0,council.sellScore||0)>=6){
+            botLog(`${coin} ${council.decision.toUpperCase()} signal (council) — ignored, waiting for combo | ${topCombos.length} combos qualified`);
+          }
           continue;
         }
-
-        if(!tradeDecision)continue;
 
         // Shadow record
         const _slD=atr*bot.slATR,_tpD=atr*bot.tpATR;
@@ -1883,7 +1880,7 @@ async function tick(){
 
         if(tpProb<tpProbThreshold){
           // Combo trades get a lower MC bar (30%) — combo already proved itself with real data
-          const comboOverride=tradeSource.startsWith('combo:')&&comboTracker.promotedCombo&&comboTracker.promotedCombo.total>=30&&comboTracker.promotedCombo.winRate>=55;
+          const comboOverride=tradeSource.startsWith('combo:'); // combo already passed 30+ trades, 55%+ WR filter
           const effectiveThreshold=comboOverride?30:tpProbThreshold;
           if(tpProb<effectiveThreshold){
             botLog(`${coin} SKIP: TP ${tpProb}% < ${effectiveThreshold}% | MC:${mc.tpProb}%tp/${mc.slProb}%sl | regime:${regime.regime}${comboOverride?' [combo bar:30%]':''}${dailyTargetHit?' 🎯':''}`);
