@@ -79,14 +79,11 @@
   <div class="sb" id="sb">
     <div class="ns">Dashboard</div>
     <div class="ni on" data-p="overview">◈ Overview</div>
-    <div class="ni" data-p="council">⚖ Council</div>
     <div class="ni" data-p="trades">⇄ Trades</div>
     <div class="ns">Intel</div>
     <div class="ni" data-p="news">📰 News</div>
     <div class="ni" data-p="chart">📈 Chart</div>
     <div class="ni" data-p="analysis">◉ Analysis</div>
-    <div class="ni" data-p="backtest">↻ Backtest</div>
-    <div class="ni" data-p="ai">✦ AI</div>
     <div class="ni" data-p="combos">🧬 Combos</div>
     <div class="ns">Config</div>
     <div class="ni" data-p="settings">⚙ Settings</div>
@@ -114,7 +111,6 @@
       <div class="cd"><div class="ct">📜 Log</div><div class="log" id="logbox">Bot not started.</div></div>
     </div>
     <!-- COUNCIL -->
-    <div class="pg" id="pg-council"><div class="cd"><div class="ct">⚖ Agent Council — Real-time Votes</div><p style="font-size:10px;color:var(--t2);margin-bottom:12px">10 specialist agents each analyze 3 timeframes (4H, 1H, 15M) using different indicators. Trade executes only when enough agents agree.</p><div class="fr"><select class="fs" id="council-sym"></select><button class="btn bb" onclick="showCouncil()">Show Votes</button><button class="btn ba" onclick="diagnose()">Diagnose</button></div><div id="council-result"></div></div></div>
     <!-- TRADES -->
     <div class="pg" id="pg-trades"><div class="cd"><div class="ct">📊 History</div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Time</th><th>Coin</th><th>Side</th><th>Size</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Why</th></tr></thead><tbody id="htb"><tr><td colspan="9" style="color:var(--t3);text-align:center;padding:16px">No trades yet</td></tr></tbody></table></div></div></div>
     <!-- NEWS -->
@@ -123,10 +119,8 @@
     <div class="pg" id="pg-chart"><div class="cd" style="padding:0;overflow:hidden;border-radius:8px"><div id="tv-chart" style="height:70vh;min-height:400px"></div></div><div class="fr" style="margin-top:6px"><select class="fs" id="tv-sym" onchange="loadChart()"></select></div></div>
     <!-- ANALYSIS -->
     <div class="pg" id="pg-analysis"><div class="cd"><div class="ct">🔍 Analysis</div><div class="fr"><select class="fs" id="asym"></select><button class="btn bb" onclick="doAnalysis()">Analyze</button></div><div id="ares"></div></div></div>
-    <!-- BACKTEST -->
-    <div class="pg" id="pg-backtest"><div class="cd"><div class="ct">↻ Backtest</div><div class="fr"><span class="fl">Symbol</span><select class="fs" id="bsym"></select></div><div class="fr"><span class="fl">Agents needed</span><select class="fs" id="bagents"><option value="3">3 (aggressive)</option><option value="4" selected>4 (balanced)</option><option value="5">5 (conservative)</option><option value="6">6 (strict)</option></select></div><div class="fr"><span class="fl">Periods</span><select class="fs" id="bper"><option value="200">200</option><option value="500" selected>500</option><option value="1000">1000</option></select></div><button class="btn ba" id="btrun" onclick="doBacktest()">▶ Run</button><div id="btres" style="margin-top:12px"></div></div></div>
-    <!-- AI -->
-    <div class="pg" id="pg-ai"><div class="cd"><div class="ct">✦ AI Advisor (Claude)</div><p style="font-size:10px;color:var(--t2);margin-bottom:10px">Uses Anthropic Claude for on-demand analysis. ~$0.01/request.</p><div class="fr"><select class="fs" id="aisym"></select><input class="fi" id="aikey" type="password" placeholder="Anthropic API key" style="width:180px"/><button class="btn bp" onclick="getAdvice()">Get Advice</button></div><div class="ai-box" id="aibox">Select a coin and enter your Anthropic API key to get AI trading advice.</div></div></div>
+
+
     <!-- COMBOS -->
     <div class="pg" id="pg-combos">
       <div class="cd glass"><div class="ct">🧬 Strategy Combination Engine</div><p style="font-size:10px;color:var(--t2);margin-bottom:10px">Testing 37 strategy combinations silently in background. Each combo uses different indicator combinations. The best performing, most consistent combo gets promoted to live trading.</p><div id="combo-stats" style="font-size:10px;color:var(--t3)">Collecting data...</div></div>
@@ -297,7 +291,6 @@ async function refresh(){
   // Log
   if(d.log&&d.log.length)document.getElementById('logbox').innerHTML=d.log.map(l=>new Date(l.time).toLocaleTimeString()+' '+l.msg).join('\n');
   // Selectors
-  if(d.symbols){for(const sel of['council-sym','asym','bsym','aisym','tv-sym']){const el=document.getElementById(sel);if(el&&!el.children.length)d.symbols.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s.replace('-USDT','');el.appendChild(o)})}}
   // Sync settings
   if(d.settings){
     document.getElementById('smode').value=d.mode||'paper';
@@ -338,113 +331,49 @@ function loadChart(){
 }
 
 // Diagnose
-async function diagnose(){
-  const sym=document.getElementById('council-sym').value;const box=document.getElementById('council-result');
-  box.innerHTML='<span style="color:var(--am)">Running diagnostic for '+sym+'...</span>';
-  const d=await api('/api/bot/diagnose/'+sym);
-  if(d.error){box.innerHTML='<span style="color:var(--re)">Error: '+d.error+'</span>';return}
-  box.innerHTML='<div style="font-family:var(--mono);font-size:11px;line-height:2;background:var(--bg0);border:1px solid var(--b1);border-radius:6px;padding:14px;max-height:500px;overflow-y:auto">'+d.steps.map(s=>{
-    if(s.step==='ERROR'||s.step==='TIMEOUT')return'<div style="color:var(--re)">'+s.step+': '+s.error+'</div>';
-    if(s.step==='source')return'<div style="color:var(--am)">'+s.data+'</div>';
-    if(s.step==='fetch_15m')return'<div>1. Fetch: <span style="color:var(--gr)">'+s.candles+' candles</span></div>';
-    if(s.step==='analyze')return'<div>2. Analysis: $'+fmtP(s.price)+' RSI:'+s.rsi+' '+s.condition+'</div>';
-    if(s.step==='council'){const vc=Object.entries(s.votes||{}).map(([k,v])=>k.replace(/_/g,' ')+':'+v).join(' | ');return'<div>3. Council: <span style="color:'+(s.decision==='buy'?'var(--gr)':s.decision==='sell'?'var(--re)':'var(--am)')+'">'+s.decision.toUpperCase()+'</span> '+s.confidence+'%<br/>'+vc+'<br/>Buy:'+s.buyCount+'('+s.buyScore+'pts) Sell:'+s.sellCount+'('+s.sellScore+'pts) Need:'+s.threshold+'</div>'}
-    if(s.step==='gates')return'<div>4. Gates: bal:$'+s.balance+' DD:'+s.drawdown+'/'+s.maxDD+(s.ddBlocked?' <span style="color:var(--re)">BLOCKED</span>':' OK')+' trades:'+s.openTrades+'/'+s.maxTrades+(s.maxBlocked?' <span style="color:var(--re)">BLOCKED</span>':'')+' mode:'+s.mode+'</div>';
-    if(s.step==='result')return'<div style="margin-top:8px;padding:10px;border-radius:6px;background:'+(s.wouldTrade?'var(--gd)':'var(--rd)')+'"><strong style="color:'+(s.wouldTrade?'var(--gr)':'var(--re)')+'">'+s.reason+'</strong></div>';
-    return'<div>'+JSON.stringify(s)+'</div>';
-  }).join('')+'</div>';
-}
 
 // Council
-async function showCouncil(){const sym=document.getElementById('council-sym').value;const box=document.getElementById('council-result');box.innerHTML='<span style="color:var(--am)">Analyzing 3 timeframes + consulting 10 agents...</span>';
-  const d=await api('/api/bot/diagnose/'+sym);if(!d.success){box.innerHTML='<span style="color:var(--re)">Error: '+(d.error||'Failed')+'</span>';return}
-  const a=d.steps.find(s=>s.step==='analyze')||{};const c=d.steps.find(s=>s.step==='council')||{};
-  if(!c.votes){box.innerHTML='<span style="color:var(--re)">No council data</span>';return}
-  const htf=c.htf||'';const htfC=htf.includes('bullish')?'var(--gr)':htf.includes('bearish')?'var(--re)':'var(--am)';
-  let html='<div class="sr" style="margin:10px 0">'+[['Price','$'+fmtP(a.price)],['RSI',a.rsi],['Condition',a.condition]].map(([l,v])=>'<div class="st"><div class="sl">'+l+'</div><div class="sv" style="font-size:12px">'+(v||'—')+'</div></div>').join('')+'</div>';
-  html+='<div style="display:flex;flex-direction:column;gap:4px;margin:10px 0">';
-  for(const[name,vote]of Object.entries(c.votes)){
-    const v=vote.split('(')[0],conf=vote.match(/\d+/)?.[0]||0;
-    const cls=v==='buy'?'buy':v==='sell'?'sell':'hold';
-    const col=v==='buy'?'var(--gr)':v==='sell'?'var(--re)':'var(--t3)';
-    html+='<div class="agent '+cls+'"><span class="agent-name">'+name.replace(/_/g,' ')+'</span><span class="agent-vote" style="color:'+col+'">'+v.toUpperCase()+' '+conf+'%</span><div class="conf-bar"><div class="conf-fill" style="width:'+conf+'%;background:'+col+'"></div></div></div>';
-  }
-  html+='</div><div style="padding:10px;border-radius:6px;background:'+(c.decision==='buy'?'var(--gd)':c.decision==='sell'?'var(--rd)':'var(--bg3)')+';margin-top:8px"><span style="color:'+(c.decision==='buy'?'var(--gr)':c.decision==='sell'?'var(--re)':'var(--am)')+';font-weight:700;font-family:var(--mono)">'+c.decision.toUpperCase()+' | '+c.buyCount+'buy('+c.buyScore+'pts) '+c.sellCount+'sell('+c.sellScore+'pts) | conf:'+c.confidence+'% | HTF:<span style="color:'+htfC+'">'+htf+'</span></span></div>';
-  box.innerHTML=html;
-}
 
 // Analysis
 async function doAnalysis(){
   const sym=document.getElementById('asym').value;const box=document.getElementById('ares');
-  box.innerHTML='<span style="color:var(--am)">Running full quant analysis...</span>';
+  box.innerHTML='<span style="color:var(--am)">Analyzing '+sym+' on 1H + 4H...</span>';
   const d=await api('/api/bot/quant/'+sym);
   if(!d.success){box.innerHTML='<span style="color:var(--re)">'+(d.error||'Failed')+'</span>';return}
-  const decCol=d.council.decision==='buy'?'var(--gr)':d.council.decision==='sell'?'var(--re)':'var(--am)';
-  const gradeCol=d.quantGrade.grade==='A+'||d.quantGrade.grade==='A'?'var(--gr)':d.quantGrade.grade==='B'?'var(--bl)':d.quantGrade.grade==='C'?'var(--am)':'var(--re)';
-  const regCol=d.regime.tradeable?'var(--gr)':'var(--re)';
-  const ind=d.indicators||{};
-  let h='<div style="padding:14px;border-radius:8px;background:'+(d.council.decision==='buy'?'var(--gd)':d.council.decision==='sell'?'var(--rd)':'var(--bg3)')+';margin-bottom:14px;text-align:center">';
-  h+='<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+decCol+'">'+d.council.decision.toUpperCase()+'</div>';
-  h+='<div style="font-size:11px;color:var(--t2);margin-top:4px">Grade: <span style="color:'+gradeCol+';font-weight:700">'+d.quantGrade.grade+'</span> ('+d.quantGrade.score+'/100) | Conf: '+d.council.confidence+'% | Regime: <span style="color:'+regCol+'">'+d.regime.regime.replace(/_/g,' ')+'</span></div></div>';
-  h+='<div style="display:flex;justify-content:space-between;padding:8px 12px;background:var(--bg2);border-radius:6px;margin-bottom:14px;font-family:var(--mono);font-size:11px">';
-  h+='<span style="color:var(--re)">SL: $'+fmtP(d.levels.sl)+'</span>';
-  h+='<span style="color:var(--bl)">Entry: $'+fmtP(d.price)+'</span>';
-  h+='<span style="color:var(--gr)">TP: $'+fmtP(d.levels.tp)+'</span>';
-  h+='<span style="color:var(--t2)">R:R 1:'+d.levels.rrRatio+'</span></div>';
-  h+='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(80px,1fr));margin-bottom:14px">';
-  h+='<div class="st"><div class="sl">MC TP%</div><div class="sv" style="font-size:13px;color:'+(d.monteCarlo.tpProb>=50?'var(--gr)':'var(--re)')+'">'+d.monteCarlo.tpProb+'%</div></div>';
-  h+='<div class="st"><div class="sl">MC SL%</div><div class="sv" style="font-size:13px;color:var(--re)">'+d.monteCarlo.slProb+'%</div></div>';
-  h+='<div class="st"><div class="sl">Exp Return</div><div class="sv '+(d.monteCarlo.expectedReturn>=0?'up':'dn')+'" style="font-size:13px">'+(d.monteCarlo.expectedReturn>=0?'+':'')+d.monteCarlo.expectedReturn+'%</div></div>';
-  h+='<div class="st"><div class="sl">Worst Case</div><div class="sv dn" style="font-size:13px">'+d.monteCarlo.worstCase+'%</div></div></div>';
-  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Trend</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
-  h+='<div class="st"><div class="sl">EMA 9</div><div class="sv" style="font-size:10px">$'+fmtP(ind.ema9)+'</div></div>';
-  h+='<div class="st"><div class="sl">EMA 21</div><div class="sv" style="font-size:10px">$'+fmtP(ind.ema21)+'</div></div>';
-  h+='<div class="st"><div class="sl">EMA 50</div><div class="sv" style="font-size:10px">$'+fmtP(ind.ema50)+'</div></div>';
-  h+='<div class="st"><div class="sl">ADX</div><div class="sv" style="font-size:11px">'+(ind.adx?ind.adx.toFixed(0):'—')+'</div><div class="ss">'+(ind.adx>25?'Strong':ind.adx>20?'Moderate':'Weak')+'</div></div>';
-  h+='<div class="st"><div class="sl">Condition</div><div class="sv" style="font-size:9px;color:'+(d.condition.includes('bullish')?'var(--gr)':d.condition.includes('bearish')?'var(--re)':'var(--am)')+'">'+d.condition.replace(/_/g,' ')+'</div></div></div></div>';
-  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Momentum</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
-  h+='<div class="st"><div class="sl">RSI</div><div class="sv" style="font-size:13px;color:'+(ind.rsi>70?'var(--re)':ind.rsi<30?'var(--gr)':'var(--t1)')+'">'+(ind.rsi?ind.rsi.toFixed(1):'—')+'</div><div class="ss">'+(ind.rsi>70?'Overbought':ind.rsi<30?'Oversold':'Neutral')+'</div></div>';
-  h+='<div class="st"><div class="sl">MACD</div><div class="sv" style="font-size:10px;color:'+(ind.macdHist>0?'var(--gr)':'var(--re)')+'">'+(ind.macdHist?ind.macdHist.toFixed(4):'—')+'</div></div>';
-  h+='<div class="st"><div class="sl">Stoch K/D</div><div class="sv" style="font-size:10px">'+(ind.stochK?ind.stochK.toFixed(0):'—')+'/'+(ind.stochD?ind.stochD.toFixed(0):'—')+'</div></div></div></div>';
-  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Volatility</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
-  h+='<div class="st"><div class="sl">ATR</div><div class="sv" style="font-size:10px">$'+(ind.atr?ind.atr.toFixed(4):'—')+'</div><div class="ss">'+(ind.atrPct?ind.atrPct.toFixed(2)+'%':'')+'</div></div>';
-  h+='<div class="st"><div class="sl">BB Upper</div><div class="sv" style="font-size:10px">$'+fmtP(ind.bbUpper)+'</div></div>';
-  h+='<div class="st"><div class="sl">BB Lower</div><div class="sv" style="font-size:10px">$'+fmtP(ind.bbLower)+'</div></div>';
-  h+='<div class="st"><div class="sl">BB Pos</div><div class="sv" style="font-size:13px;color:'+(ind.bbPosition>80?'var(--re)':ind.bbPosition<20?'var(--gr)':'var(--t1)')+'">'+(ind.bbPosition!==null?ind.bbPosition+'%':'—')+'</div></div></div></div>';
-  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Volume & Levels</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
-  h+='<div class="st"><div class="sl">VWAP</div><div class="sv" style="font-size:10px">$'+fmtP(ind.vwap)+'</div><div class="ss">'+(d.price>ind.vwap?'Above':'Below')+'</div></div>';
-  h+='<div class="st"><div class="sl">OBV</div><div class="sv" style="font-size:10px;color:'+(ind.obvTrend==='bullish'?'var(--gr)':'var(--re)')+'">'+(ind.obvTrend||'—').toUpperCase()+'</div></div>';
-  h+='<div class="st"><div class="sl">Support</div><div class="sv" style="font-size:10px;color:var(--gr)">$'+fmtP(ind.support)+'</div></div>';
-  h+='<div class="st"><div class="sl">Resistance</div><div class="sv" style="font-size:10px;color:var(--re)">$'+fmtP(ind.resistance)+'</div></div>';
-  if(ind.inGoldenPocket)h+='<div class="st" style="border:1px solid var(--am)"><div class="sl" style="color:var(--am)">Golden Pocket</div><div class="sv" style="font-size:11px;color:var(--am)">ACTIVE</div></div>';
+  const h1=d.h1||{};const h4=d.h4||{};
+  let h='<div style="padding:12px;background:var(--bg2);border-radius:8px;margin-bottom:12px;text-align:center">';
+  h+='<div style="font-family:var(--mono);font-size:18px;color:var(--t1)">'+sym.replace('-USDT','')+'</div>';
+  h+='<div style="font-size:22px;font-weight:700;color:var(--t1);margin:4px 0">$'+fmtP(d.price)+'</div>';
+  h+='<div style="font-size:10px;color:var(--t2)">Trend: <span style="color:'+(d.trendAligned==='bullish'?'var(--gr)':d.trendAligned==='bearish'?'var(--re)':'var(--am)')+'">'+d.trendAligned.toUpperCase()+'</span></div></div>';
+  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">4H Indicators</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
+  h+='<div class="st"><div class="sl">EMA 21</div><div class="sv" style="font-size:10px">$'+fmtP(h4.ema21)+'</div></div>';
+  h+='<div class="st"><div class="sl">EMA 50</div><div class="sv" style="font-size:10px">$'+fmtP(h4.ema50)+'</div></div>';
+  h+='<div class="st"><div class="sl">SMA 200</div><div class="sv" style="font-size:10px">$'+fmtP(h4.sma200)+'</div></div>';
+  h+='<div class="st"><div class="sl">RSI</div><div class="sv" style="font-size:12px;color:'+(h4.rsi>70?'var(--re)':h4.rsi<30?'var(--gr)':'var(--t1)')+'">'+(h4.rsi?h4.rsi.toFixed(0):'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">ADX</div><div class="sv" style="font-size:12px">'+(h4.adx?h4.adx.toFixed(0):'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">Supertrend</div><div class="sv" style="font-size:10px;color:'+(h4.supertrend?.trend===1?'var(--gr)':'var(--re)')+'">'+(h4.supertrend?.trend===1?'BULL':'BEAR')+'</div></div>';
+  h+='<div class="st"><div class="sl">Slope</div><div class="sv" style="font-size:10px;color:'+(h4.slope>0?'var(--gr)':'var(--re)')+'">'+(h4.slope?h4.slope.toFixed(3):'—')+'%</div></div>';
+  h+='<div class="st"><div class="sl">Chop</div><div class="sv" style="font-size:10px">'+(h4.choppiness?h4.choppiness.toFixed(0):'—')+'</div><div class="ss">'+(h4.choppiness<38?'Trending':h4.choppiness>61?'Ranging':'Mixed')+'</div></div>';
   h+='</div></div>';
-  h+='<div style="font-size:10px;color:var(--t2);margin-bottom:6px;line-height:1.6">';
-  h+='<strong>MC:</strong> '+d.monteCarlo.sims+' sims | '+d.monteCarlo.tpProb+'% TP / '+d.monteCarlo.slProb+'% SL / '+d.monteCarlo.noHitPct+'% timeout<br/>';
-  h+='<strong>Regime:</strong> '+d.regime.reason+'<br/>';
-  if(d.correlation)h+='<strong>Correlation:</strong> '+d.correlation.group+' '+(d.correlation.canTrade?'✅':'❌ blocked')+'<br/>';
-  if(d.btc)h+='<strong>BTC:</strong> '+d.btc.condition+' RSI:'+(d.btc.rsi?d.btc.rsi.toFixed(0):'?')+' 1h:'+(d.btc.priceChange1h>=0?'+':'')+d.btc.priceChange1h?.toFixed(2)+'%<br/>';
-  h+='</div>';
-  h+='<div class="cd" style="padding:10px"><div class="ct">Agent Votes ('+d.council.buyCount+'buy/'+d.council.sellCount+'sell | need '+d.council.weightThreshold+'pts)</div>';
-  for(const[name,v] of Object.entries(d.council.votes||{})){
-    const vc=v.vote==='buy'?'var(--gr)':v.vote==='sell'?'var(--re)':'var(--t3)';
-    const cls=v.vote==='buy'?'buy':v.vote==='sell'?'sell':'hold';
-    h+='<div class="agent '+cls+'" style="margin-bottom:4px"><span class="agent-name">'+name.replace(/_/g,' ')+'</span><span class="agent-vote" style="color:'+vc+'">'+v.vote.toUpperCase()+' '+v.confidence+'%</span><div class="conf-bar"><div class="conf-fill" style="width:'+v.confidence+'%;background:'+vc+'"></div></div></div>';
-    if(v.reason)h+='<div style="font-size:8px;color:var(--t3);margin:-2px 0 4px 12px;line-height:1.4">'+v.reason+'</div>';
-  }
-  h+='</div>';
+  h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">1H Entry Timing</div><div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(75px,1fr))">';
+  h+='<div class="st"><div class="sl">RSI</div><div class="sv" style="font-size:12px">'+(h1.rsi?h1.rsi.toFixed(0):'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">MACD</div><div class="sv" style="font-size:10px;color:'+(h1.macdHist>0?'var(--gr)':'var(--re)')+'">'+(h1.macdHist?h1.macdHist.toFixed(4):'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">BB Pos</div><div class="sv" style="font-size:10px">'+(h1.bbUpper&&h1.bbLower?Math.round((d.price-h1.bbLower)/(h1.bbUpper-h1.bbLower)*100)+'%':'—')+'</div></div>';
+  h+='<div class="st"><div class="sl">VWAP</div><div class="sv" style="font-size:10px;color:'+(d.price>h1.vwap?'var(--gr)':'var(--re)')+'">'+(d.price>h1.vwap?'Above':'Below')+'</div></div>';
+  h+='<div class="st"><div class="sl">Patterns</div><div class="sv" style="font-size:8px">'+(h1.patterns&&h1.patterns.length?h1.patterns.join(', '):'none')+'</div></div>';
+  h+='</div></div>';
+  if(d.signals){h+='<div class="cd" style="margin-bottom:10px;padding:10px"><div class="ct">Signal Status ('+Object.keys(d.signals).length+' signals)</div><div style="display:flex;flex-wrap:wrap;gap:3px">';
+    for(const[name,s] of Object.entries(d.signals)){const col=s.signal==='buy'?'var(--gr)':s.signal==='sell'?'var(--re)':'var(--t3)';h+='<span style="background:var(--bg2);padding:2px 6px;border-radius:3px;font-family:var(--mono);font-size:8px;color:'+col+'">'+name.replace(/_/g,' ')+':'+s.signal+'</span>'}
+    h+='</div></div>'}
+  if(d.firedCombos&&d.firedCombos.length){h+='<div class="cd" style="padding:10px"><div class="ct">Combos Firing Now ('+d.firedCombos.length+')</div>';
+    for(const c of d.firedCombos){h+='<div style="padding:4px 8px;background:'+(c.decision==='buy'?'var(--gd)':'var(--rd)')+';border-radius:4px;margin:3px 0;font-family:var(--mono);font-size:9px;color:'+(c.decision==='buy'?'var(--gr)':'var(--re)')+'">'+c.decision.toUpperCase()+': '+c.signals.join(' + ')+'</div>'}
+    h+='</div>'}else{h+='<div style="padding:10px;color:var(--t3);font-size:10px;text-align:center">No combos firing — waiting for the right setup</div>'}
   box.innerHTML=h;
 }
 
 // Backtest
-async function doBacktest(){document.getElementById('btrun').disabled=true;document.getElementById('btres').innerHTML='<span style="color:var(--am)">Running...</span>';
-  const d=await api('/api/bot/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:document.getElementById('bsym').value,requiredAgents:+document.getElementById('bagents').value,periods:+document.getElementById('bper').value})});
-  document.getElementById('btrun').disabled=false;if(d.error){document.getElementById('btres').innerHTML='<span style="color:var(--re)">'+d.error+'</span>';return}
-  const r=d.result;document.getElementById('btres').innerHTML='<div class="sr">'+[['Trades',r.trades?.length||0],['Win Rate',(r.winRate||0).toFixed(0)+'%'],['Total PnL','$'+(r.totalPnL||0).toFixed(2)],['Avg PnL','$'+(r.avgPnL||0).toFixed(2)]].map(([l,v])=>'<div class="st"><div class="sl">'+l+'</div><div class="sv" style="font-size:12px">'+v+'</div></div>').join('')+'</div>';
-}
 
 // AI Advice
-async function getAdvice(){const sym=document.getElementById('aisym').value;const key=document.getElementById('aikey').value.trim();if(!key)return alert('Enter Anthropic API key');document.getElementById('aibox').textContent='Thinking...';
-  const d=await api('/api/bot/ai-advice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym,anthropicKey:key})});document.getElementById('aibox').textContent=d.advice||d.error||'No response'}
 
 // Combo rankings page
 async function refreshCombos(){
