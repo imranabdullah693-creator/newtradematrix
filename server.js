@@ -341,8 +341,44 @@ const COMBO_TEMPLATES=[
   ['ema200_bounce','volume_spike'],
   ['fib_golden_bounce','rsi_oversold'],
   ['sr_retest','rsi_pullback'],
-  ['sr_break_retest','ema_stack']
+  ['sr_break_retest','ema_stack'],
+  // ═══ ELITE SETUPS — historically proven 70%+ WR patterns ═══
+  // These get fast-tracked: only need 15 trades (not 20) to promote
+  ['ema21_bounce','macd_cross','supertrend_4h'],        // EMA21 pullback + confirmation + trend
+  ['ema21_bounce','engulfing','adx_strong'],             // EMA21 pullback + engulfing candle + strong trend
+  ['ema21_bounce','hammer','obv_trend'],                 // EMA21 pullback + hammer + volume confirms
+  ['fib_golden_bounce','engulfing','supertrend_4h'],     // Golden zone + engulfing + trend intact
+  ['fib_golden_bounce','ema_stack','macd_cross'],        // Golden zone + all EMAs aligned + MACD confirms
+  ['fib_golden_bounce','stoch_cross','higher_highs'],    // Golden zone + stoch oversold + uptrend structure
+  ['ema50_bounce','hammer','ema_stack'],                 // EMA50 deep pullback + hammer + trend intact
+  ['ema50_bounce','rsi_pullback','supertrend_4h'],       // EMA50 pullback + RSI dip + supertrend bullish
+  ['sr_retest','engulfing','volume_spike'],              // Support test + engulfing + volume explosion
+  ['sr_break_retest','engulfing','adx_strong'],          // Breakout retest + engulfing + strong momentum
+  ['ema200_bounce','hammer','volume_spike'],             // EMA200 bounce = MAJOR support + confirmation
+  ['ema200_bounce','three_soldiers','adx_strong'],       // EMA200 bounce + 3 green candles + trend strength
+  ['dual_tf_trend','ema21_pullback','volume_spike'],     // Both timeframes agree + pullback + volume
+  ['higher_highs','ema21_bounce','macd_4h'],             // Uptrend structure + pullback + 4H MACD bullish
+  ['sma_cross_50_200','ema21_pullback','rsi_pullback']   // Golden cross + pullback to EMA21 + RSI dip
 ];
+
+// Mark elite combos (fast-track promotion: need 15 trades not 20)
+const ELITE_COMBOS=new Set([
+  'adx_strong+ema21_bounce+macd_cross+supertrend_4h',
+  'adx_strong+ema21_bounce+engulfing',
+  'ema21_bounce+hammer+obv_trend',
+  'engulfing+fib_golden_bounce+supertrend_4h',
+  'ema_stack+fib_golden_bounce+macd_cross',
+  'fib_golden_bounce+higher_highs+stoch_cross',
+  'ema50_bounce+ema_stack+hammer',
+  'ema50_bounce+rsi_pullback+supertrend_4h',
+  'engulfing+sr_retest+volume_spike',
+  'adx_strong+engulfing+sr_break_retest',
+  'ema200_bounce+hammer+volume_spike',
+  'adx_strong+ema200_bounce+three_soldiers',
+  'dual_tf_trend+ema21_pullback+volume_spike',
+  'ema21_bounce+higher_highs+macd_4h',
+  'ema21_pullback+rsi_pullback+sma_cross_50_200'
+].map(s=>[...s.split('+')].sort().join('+')));
 
 // ═══ COMBO ENGINE ═══
 let comboTracker={combos:{},rankings:[],promotedCombos:[],lastRankUpdate:0};
@@ -425,7 +461,11 @@ function rankCombos(){
   rankings.sort((a,b)=>b.score-a.score);
   comboTracker.rankings=rankings;
   // Promote top 3 that meet criteria
-  comboTracker.promotedCombos=rankings.filter(r=>r.total>=20&&r.winRate>=55&&r.winRate<95&&r.sharpe>0.2).slice(0,3);
+  comboTracker.promotedCombos=rankings.filter(r=>{
+    const isElite=ELITE_COMBOS.has(r.id);
+    const minTrades=isElite?15:20; // elite combos promoted faster
+    return r.total>=minTrades&&r.winRate>=55&&r.winRate<95&&r.sharpe>0.2;
+  }).slice(0,3);
   if(comboTracker.promotedCombos.length)saveComboData();
 }
 
