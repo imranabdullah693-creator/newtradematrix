@@ -95,7 +95,7 @@
   <div class="mn">
     <!-- OVERVIEW -->
     <div class="pg act" id="pg-overview">
-      <div class="warn">⚠ 10 specialist agents analyze 3 timeframes (4H/1H/15M) across 30 coins. Trades pass 5 gates: council consensus, TP probability, position sizing, daily target, and risk management. Runs 24/7.</div>
+      <div class="warn">⚠ v5 Swing — 45 signals tested in 62 combo templates on 1H+4H charts. Top 3 winning combos auto-promoted to live trading. Smart exits book profits early.</div>
       <div class="cd" id="wallet-card"><div class="ct">💰 KuCoin Wallet</div><div id="wallet-content" style="color:var(--t3);font-size:11px">Loading...</div></div>
       <div class="sr" id="stats"></div>
       <!-- Market Regime -->
@@ -103,9 +103,9 @@
       <!-- Top Opportunities -->
       <div class="cd glass"><div class="ct">🏆 Top Opportunities</div><div id="opps-content" style="font-size:10px;color:var(--t3)">Waiting for scan...</div></div>
       <!-- Quant Stats -->
-      <div class="cd glass"><div class="ct">📐 Quant Stats (Shadow Trading)</div><div id="sharpe-content" style="font-size:10px;color:var(--t3)">Building track record...</div></div>
+      
       <!-- Supervisor -->
-      <div class="cd glass"><div class="ct">🛡 Supervisor</div><div id="sup-content" style="font-size:10px;color:var(--t3)">Monitoring...</div></div>
+      
       <!-- Combo Engine Mini -->
       <div class="cd glass"><div class="ct">🧬 Combo Engine</div><div id="combo-mini" style="font-size:10px;color:var(--t3)">Testing combos in background...</div></div>
       <div class="cd"><div class="ct">⚡ Control</div><div class="brow"><button class="btn bg" id="bstart" onclick="startBot()">▶ Start Bot</button><button class="btn br" id="bstop" onclick="stopBot()" disabled>◼ Stop</button></div></div>
@@ -279,72 +279,14 @@ async function refresh(){
   }
 
   // Sharpe / Shadow stats
-  if(d.sharpe){
-    const s=d.sharpe;const ss=d.shadowStats||{};
-    const shCol=s.sharpe>=1.5?'var(--gr)':s.sharpe>=0.5?'var(--am)':'var(--re)';
-    const wrCol=s.winRate>=55?'var(--gr)':s.winRate>=45?'var(--am)':'var(--re)';
-    document.getElementById('sharpe-content').innerHTML=
-      '<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(100px,1fr))">'
-      +'<div class="st"><div class="sl">Sharpe Ratio</div><div class="sv" style="color:'+shCol+';font-size:14px">'+s.sharpe+'</div><div class="ss">'+(s.sharpe>=2?'Excellent':s.sharpe>=1?'Good':s.sharpe>=0.5?'Fair':'Poor')+'</div></div>'
-      +'<div class="st"><div class="sl">Shadow Win%</div><div class="sv" style="color:'+wrCol+';font-size:14px">'+(s.winRate||0)+'%</div><div class="ss">'+(ss.wins||0)+'W / '+(ss.losses||0)+'L</div></div>'
-      +'<div class="st"><div class="sl">Avg Return</div><div class="sv '+(s.mean>=0?'up':'dn')+'" style="font-size:14px">'+(s.mean>=0?'+':'')+s.mean+'%</div><div class="ss">per signal</div></div>'
-      +'<div class="st"><div class="sl">Signals</div><div class="sv" style="font-size:14px">'+s.trades+'</div><div class="ss">'+(ss.active||0)+' active</div></div>'
-      +'</div>'
-      +(s.trades<10?'<div style="margin-top:6px;font-size:9px;color:var(--t3)">Need '+(10-s.trades)+' more signals for reliable Sharpe</div>':'');
-    // Learning insights
-    if(d.learning&&d.learning.insights&&d.learning.insights.length){
-      let lhtml='<div style="margin-top:8px;border-top:1px solid var(--b1);padding-top:8px;font-size:9px">';
-      lhtml+='<div style="color:var(--t3);margin-bottom:4px;font-weight:600">🧠 Shadow Learning Insights:</div>';
-      for(const ins of d.learning.insights){
-        const col=ins.type==='positive'?'var(--gr)':ins.type==='warning'?'var(--re)':'var(--bl)';
-        const icon=ins.type==='positive'?'✅':ins.type==='warning'?'⚠':'ℹ';
-        lhtml+='<div style="color:'+col+';margin:2px 0">'+icon+' '+ins.msg+'</div>';
-      }
-      if(d.learning.sideBias&&(d.learning.sideBias.buyWinRate!==null||d.learning.sideBias.sellWinRate!==null)){
-        lhtml+='<div style="color:var(--t3);margin-top:4px">Buy WR: '+(d.learning.sideBias.buyWinRate!==null?d.learning.sideBias.buyWinRate+'% ('+d.learning.sideBias.buyCount+')':'—')+' | Sell WR: '+(d.learning.sideBias.sellWinRate!==null?d.learning.sideBias.sellWinRate+'% ('+d.learning.sideBias.sellCount+')':'—')+'</div>';
-      }
-      lhtml+='</div>';
-      document.getElementById('sharpe-content').innerHTML+=lhtml;
-    }
-  }
 
   // Supervisor
-  if(d.supervisor){
-    const sv=d.supervisor;
-    const cbCol=sv.circuitBroken?'var(--re)':'var(--gr)';
-    const wrCol=sv.recentWinRate!==null?(sv.recentWinRate>=50?'var(--gr)':sv.recentWinRate>=30?'var(--am)':'var(--re)'):'var(--t3)';
-    const modeCol=sv.mode==='normal'?'var(--gr)':sv.mode==='cautious'?'var(--am)':sv.mode==='recovery'?'var(--re)':sv.mode==='aggressive'?'var(--bl)':'var(--t3)';
-    let supHtml='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(90px,1fr))">';
-    supHtml+='<div class="st"><div class="sl">Mode</div><div class="sv" style="color:'+modeCol+';font-size:12px">'+sv.mode.toUpperCase()+'</div></div>';
-    supHtml+='<div class="st"><div class="sl">Circuit</div><div class="sv" style="color:'+cbCol+';font-size:12px">'+(sv.circuitBroken?'🛑 ON':'✅ OFF')+'</div></div>';
-    supHtml+='<div class="st"><div class="sl">Streak</div><div class="sv" style="font-size:12px;color:'+(sv.consecutiveLosses>=2?'var(--re)':sv.consecutiveWins>=2?'var(--gr)':'var(--t1)')+'">'+(sv.consecutiveWins>0?sv.consecutiveWins+'W':'')+(sv.consecutiveLosses>0?sv.consecutiveLosses+'L':'')+(sv.consecutiveWins===0&&sv.consecutiveLosses===0?'—':'')+'</div></div>';
-    supHtml+='<div class="st"><div class="sl">Win%</div><div class="sv" style="color:'+wrCol+';font-size:12px">'+(sv.recentWinRate!==null?sv.recentWinRate+'%':'—')+'</div></div>';
-    supHtml+='</div>';
-    // Recent adjustments
-    if(sv.recentAdjustments&&sv.recentAdjustments.length){
-      supHtml+='<div style="margin-top:8px;font-size:9px;color:var(--t3)">Recent Adjustments:</div><div style="margin-top:4px">';
-      for(const a of sv.recentAdjustments){
-        supHtml+='<div style="font-family:var(--mono);font-size:8px;color:var(--am);padding:2px 0">🔧 '+a.action+'</div>';
-      }
-      supHtml+='</div>';
-    }
-    // Agent accuracy
-    if(sv.agentReport&&Object.keys(sv.agentReport).length){
-      supHtml+='<div style="margin-top:8px;font-size:9px;color:var(--t3)">Agent Accuracy:</div><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
-      for(const[name,s] of Object.entries(sv.agentReport)){
-        const col=s.rating==='reliable'?'var(--gr)':s.rating==='average'?'var(--am)':'var(--re)';
-        supHtml+='<span style="background:var(--bg2);padding:2px 6px;border-radius:3px;font-family:var(--mono);font-size:8px"><span style="color:var(--t2)">'+name.replace(/_/g,' ')+'</span> <span style="color:'+col+'">'+s.accuracy+'%</span></span>';
-      }
-      supHtml+='</div>';
-    }
-    document.getElementById('sup-content').innerHTML=supHtml;
-  }
 
   // Combo engine mini
   if(d.combos){
     const cm=d.combos;
     let cmH='<div style="display:flex;gap:10px;font-size:10px;margin-bottom:6px"><span>Combos: <strong>'+cm.totalCombos+'</strong></span><span>Demo trades: <strong>'+cm.totalTrades+'</strong></span></div>';
-    if(cm.promoted){cmH+='<div style="padding:6px 8px;background:var(--gd);border-radius:4px;font-family:var(--mono);font-size:9px;color:var(--gr)">🏆 '+cm.promoted.signals.join(' + ')+' (WR:'+cm.promoted.winRate+'% Sharpe:'+cm.promoted.sharpe+')</div>'}
+    if(cm.promoted&&cm.promoted.length){for(const p of cm.promoted.slice(0,3)){cmH+='<div style="padding:4px 8px;background:var(--gd);border-radius:4px;font-family:var(--mono);font-size:9px;color:var(--gr);margin-bottom:3px">🏆 '+p.signals.join(' + ')+' (WR:'+p.winRate+'% Sharpe:'+p.sharpe+')</div>'}}
     else{cmH+='<div style="font-size:9px;color:var(--t3)">No combo promoted yet — collecting more data...</div>'}
     if(cm.rankings&&cm.rankings.length>=3){cmH+='<div style="margin-top:6px;font-size:9px;color:var(--t3)">Top 3: '+cm.rankings.slice(0,3).map((r,i)=>'<span style="color:var(--t2)">'+(i+1)+'. '+r.signals.join('+')+' ('+r.winRate+'%)</span>').join(' | ')+'</div>'}
     document.getElementById('combo-mini').innerHTML=cmH;
@@ -481,7 +423,6 @@ async function doAnalysis(){
   h+='<strong>Regime:</strong> '+d.regime.reason+'<br/>';
   if(d.correlation)h+='<strong>Correlation:</strong> '+d.correlation.group+' '+(d.correlation.canTrade?'✅':'❌ blocked')+'<br/>';
   if(d.btc)h+='<strong>BTC:</strong> '+d.btc.condition+' RSI:'+(d.btc.rsi?d.btc.rsi.toFixed(0):'?')+' 1h:'+(d.btc.priceChange1h>=0?'+':'')+d.btc.priceChange1h?.toFixed(2)+'%<br/>';
-  if(d.sharpe)h+='<strong>Sharpe:</strong> '+d.sharpe.sharpe+' ('+d.sharpe.trades+' signals)<br/>';
   h+='</div>';
   h+='<div class="cd" style="padding:10px"><div class="ct">Agent Votes ('+d.council.buyCount+'buy/'+d.council.sellCount+'sell | need '+d.council.weightThreshold+'pts)</div>';
   for(const[name,v] of Object.entries(d.council.votes||{})){
@@ -509,15 +450,15 @@ async function getAdvice(){const sym=document.getElementById('aisym').value;cons
 async function refreshCombos(){
   const d=await api('/api/bot/combos');if(!d.success)return;
   document.getElementById('combo-stats').innerHTML='<div class="sr" style="grid-template-columns:repeat(auto-fit,minmax(80px,1fr))"><div class="st"><div class="sl">Combos</div><div class="sv" style="font-size:14px">'+d.totalCombos+'</div></div><div class="st"><div class="sl">Demo Trades</div><div class="sv" style="font-size:14px">'+d.totalDemoTrades+'</div></div><div class="st"><div class="sl">Active</div><div class="sv" style="font-size:14px">'+d.activeTrades+'</div></div><div class="st"><div class="sl">Signals</div><div class="sv" style="font-size:14px">'+d.signalLibrary.length+'</div></div></div>';
-  if(d.promoted){
-    const p=d.promoted;
+  if(d.promoted&&d.promoted.length){
+    const p=d.promoted[0];
     document.getElementById('promoted-combo').innerHTML='<div style="padding:10px;border-radius:6px;background:var(--gd);border:1px solid rgba(0,230,118,0.2)"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--gr)">'+p.signals.map(s=>s.replace(/_/g,' ')).join(' + ')+'</div><div style="font-size:10px;color:var(--t2);margin-top:4px">WR: '+p.winRate+'% | Sharpe: '+p.sharpe+' | Avg: '+(p.avgReturn>=0?'+':'')+p.avgReturn+'% | Consistency: '+p.consistency+' | PF: '+p.profitFactor+' | Trades: '+p.total+'</div></div>';
   }
   if(d.rankings&&d.rankings.length){
     let h='<table class="tbl"><thead><tr><th>#</th><th>Combo</th><th>W/L</th><th>WR%</th><th>Avg</th><th>Sharpe</th><th>PF</th><th>Score</th></tr></thead><tbody>';
     d.rankings.forEach((r,i)=>{
       const wrCol=r.winRate>=55?'var(--gr)':r.winRate>=45?'var(--am)':'var(--re)';
-      const isPromoted=d.promoted&&d.promoted.id===r.id;
+      const isPromoted=d.promoted&&d.promoted.some(p=>p.id===r.id);
       h+='<tr style="'+(isPromoted?'background:var(--gd);':'')+'"><td style="color:var(--bl);font-weight:700">'+(i+1)+'</td><td style="font-size:9px">'+r.signals.map(s=>s.replace(/_/g,' ')).join(' + ')+(isPromoted?' 🏆':'')+'</td><td>'+r.wins+'/'+r.losses+'</td><td style="color:'+wrCol+'">'+r.winRate+'%</td><td class="'+(r.avgReturn>=0?'up':'dn')+'">'+(r.avgReturn>=0?'+':'')+r.avgReturn+'%</td><td>'+r.sharpe+'</td><td>'+r.profitFactor+'</td><td style="font-weight:600">'+r.score+'</td></tr>';
     });
     h+='</tbody></table>';
