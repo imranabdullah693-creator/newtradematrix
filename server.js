@@ -178,7 +178,94 @@ const SIGNALS={
   dual_tf_trend(a){return{signal:a.trendAligned==='bullish'?'buy':a.trendAligned==='bearish'?'sell':'none',name:'1H+4H trend aligned'}},
   ema21_pullback(a){const dist=(a.price-a.h4.ema21)/a.price*100;return{signal:dist>-1.5&&dist<0&&a.h4.ema21>a.h4.ema50?'buy':dist<1.5&&dist>0&&a.h4.ema21<a.h4.ema50?'sell':'none',name:'4H EMA21 pullback'}},
   news_sentiment(a){return{signal:a.news?.overall?.bias==='bullish'?'buy':a.news?.overall?.bias==='bearish'?'sell':'none',name:'News sentiment'}},
-  fear_greed(a){return{signal:a.sentiment?.value<25?'buy':a.sentiment?.value>75?'sell':'none',name:'F&G extreme'}}
+  fear_greed(a){return{signal:a.sentiment?.value<25?'buy':a.sentiment?.value>75?'sell':'none',name:'F&G extreme'}},
+
+  // ═══ PULLBACK + BOUNCE + CONFIRMATION ═══
+  // Key: price must TOUCH level, then BOUNCE (next candle confirms direction)
+
+  ema21_bounce(a){
+    // 4H: price pulled back to EMA21, touched it, and bounced with a confirmation candle
+    const e=a.h4;if(!e.ema21)return{signal:'none',name:'EMA21 bounce'};
+    const dist=(e.price-e.ema21)/e.price*100;
+    const prevDist=e.low?(e.low-e.ema21)/e.price*100:dist;
+    // Bullish: price dipped TO ema21 (within 0.5%) and current candle closed above it
+    if(prevDist<=0.5&&prevDist>=-0.5&&e.price>e.ema21&&e.ema21>e.ema50)return{signal:'buy',name:'EMA21 bounce (4H)'};
+    // Bearish: price rallied TO ema21 and rejected
+    if(prevDist>=-0.5&&prevDist<=0.5&&e.price<e.ema21&&e.ema21<e.ema50)return{signal:'sell',name:'EMA21 reject (4H)'};
+    return{signal:'none',name:'EMA21 bounce'};
+  },
+  ema50_bounce(a){
+    const e=a.h4;if(!e.ema50)return{signal:'none',name:'EMA50 bounce'};
+    const dist=(e.price-e.ema50)/e.price*100;
+    const wicked=e.low?(e.low-e.ema50)/e.price*100:dist;
+    if(wicked<=0.8&&wicked>=-0.8&&e.price>e.ema50&&e.ema21>e.ema50)return{signal:'buy',name:'EMA50 bounce (4H)'};
+    if(wicked>=-0.8&&wicked<=0.8&&e.price<e.ema50&&e.ema21<e.ema50)return{signal:'sell',name:'EMA50 reject (4H)'};
+    return{signal:'none',name:'EMA50 bounce'};
+  },
+  ema100_bounce(a){
+    const e=a.h4;if(!e.ema100)return{signal:'none',name:'EMA100 bounce'};
+    const dist=(e.price-e.ema100)/e.price*100;
+    if(dist>=-1&&dist<=1&&e.price>e.ema100)return{signal:'buy',name:'EMA100 bounce (4H)'};
+    if(dist>=-1&&dist<=1&&e.price<e.ema100)return{signal:'sell',name:'EMA100 reject (4H)'};
+    return{signal:'none',name:'EMA100 bounce'};
+  },
+  ema200_bounce(a){
+    const e=a.h4;if(!e.ema200)return{signal:'none',name:'EMA200 bounce'};
+    const dist=(e.price-e.ema200)/e.price*100;
+    // EMA200 bounce is a BIG deal — major support/resistance
+    if(dist>=-1.5&&dist<=1.5&&e.price>e.ema200)return{signal:'buy',name:'EMA200 bounce (4H) — MAJOR support'};
+    if(dist>=-1.5&&dist<=1.5&&e.price<e.ema200)return{signal:'sell',name:'EMA200 reject (4H) — MAJOR resistance'};
+    return{signal:'none',name:'EMA200 bounce'};
+  },
+
+  // Support/Resistance RETEST after breakout
+  sr_retest(a){
+    const e=a.h4;if(!e.support||!e.resistance)return{signal:'none',name:'S/R retest'};
+    const distS=Math.abs(e.price-e.support)/e.price*100;
+    const distR=Math.abs(e.price-e.resistance)/e.price*100;
+    // Price near support AND previous candle was above (pulling back to retest)
+    if(distS<1&&e.price>e.support)return{signal:'buy',name:'Support retest + hold'};
+    if(distR<1&&e.price<e.resistance)return{signal:'sell',name:'Resistance retest + reject'};
+    return{signal:'none',name:'S/R retest'};
+  },
+
+  // S/R BREAKOUT + RETEST (broken support = new resistance, broken resistance = new support)
+  sr_break_retest(a){
+    const e=a.h4;if(!e.support||!e.resistance)return{signal:'none',name:'S/R break retest'};
+    // If price broke above resistance and is now retesting it from above (new support)
+    const aboveR=(e.price-e.resistance)/e.price*100;
+    if(aboveR>0&&aboveR<2&&e.slope>0)return{signal:'buy',name:'Broken resistance → new support retest'};
+    // If price broke below support and is now retesting from below (new resistance)
+    const belowS=(e.support-e.price)/e.price*100;
+    if(belowS>0&&belowS<2&&e.slope<0)return{signal:'sell',name:'Broken support → new resistance retest'};
+    return{signal:'none',name:'S/R break retest'};
+  },
+
+  // Fibonacci GOLDEN ZONE bounce (0.618-0.5 retracement)
+  fib_golden_bounce(a){
+    const e=a.h4;if(!e.inGoldenPocket)return{signal:'none',name:'Fib golden bounce'};
+    // In golden pocket AND showing a bounce candle (green candle, or hammer)
+    const bounceCandle=e.price>e.open;
+    const hasPattern=a.h1.patterns?.includes('hammer')||a.h1.patterns?.includes('bullish_engulfing')||a.h1.patterns?.includes('pin_bar_bull');
+    if(bounceCandle||hasPattern)return{signal:'buy',name:'Fib golden zone (0.618-0.5) + bounce confirmation'};
+    return{signal:'none',name:'Fib golden bounce'};
+  },
+
+  // SMA pullback + bounce (SMA20, SMA50)
+  sma20_bounce(a){
+    const e=a.h4;if(!e.sma20)return{signal:'none',name:'SMA20 bounce'};
+    const dist=(e.price-e.sma20)/e.price*100;
+    if(dist>=-0.5&&dist<=0.5&&e.price>e.sma20&&e.sma20>e.sma50)return{signal:'buy',name:'SMA20 bounce (4H)'};
+    if(dist>=-0.5&&dist<=0.5&&e.price<e.sma20&&e.sma20<e.sma50)return{signal:'sell',name:'SMA20 reject (4H)'};
+    return{signal:'none',name:'SMA20 bounce'};
+  },
+  sma50_bounce(a){
+    const e=a.h4;if(!e.sma50)return{signal:'none',name:'SMA50 bounce'};
+    const dist=(e.price-e.sma50)/e.price*100;
+    if(dist>=-0.8&&dist<=0.8&&e.price>e.sma50)return{signal:'buy',name:'SMA50 bounce (4H)'};
+    if(dist>=-0.8&&dist<=0.8&&e.price<e.sma50)return{signal:'sell',name:'SMA50 reject (4H)'};
+    return{signal:'none',name:'SMA50 bounce'};
+  }
 };
 
 const SIGNAL_NAMES=Object.keys(SIGNALS);
@@ -230,7 +317,31 @@ const COMBO_TEMPLATES=[
   ['golden_pocket','rsi_oversold'],
   ['bb_squeeze','volume_spike'],
   ['sma_cross_20_50','obv_trend'],
-  ['pivot_support','hammer']
+  ['pivot_support','hammer'],
+  // ═══ PULLBACK + BOUNCE COMBOS ═══
+  ['ema21_bounce','macd_cross','volume_spike'],
+  ['ema21_bounce','rsi_pullback','adx_strong'],
+  ['ema50_bounce','stoch_cross','obv_trend'],
+  ['ema50_bounce','macd_cross','higher_highs'],
+  ['ema100_bounce','hammer','volume_spike'],
+  ['ema200_bounce','engulfing','adx_strong'],
+  ['ema200_bounce','rsi_oversold','volume_spike'],
+  ['sma20_bounce','macd_cross','vwap_position'],
+  ['sma50_bounce','rsi_pullback','obv_trend'],
+  ['fib_golden_bounce','ema_stack','volume_spike'],
+  ['fib_golden_bounce','hammer','adx_strong'],
+  ['fib_golden_bounce','macd_cross','supertrend_4h'],
+  ['sr_retest','hammer','volume_spike'],
+  ['sr_retest','engulfing','adx_strong'],
+  ['sr_break_retest','volume_spike','trend_slope'],
+  ['sr_break_retest','macd_cross','supertrend_4h'],
+  // Bounce pairs
+  ['ema21_bounce','supertrend_4h'],
+  ['ema50_bounce','adx_strong'],
+  ['ema200_bounce','volume_spike'],
+  ['fib_golden_bounce','rsi_oversold'],
+  ['sr_retest','rsi_pullback'],
+  ['sr_break_retest','ema_stack']
 ];
 
 // ═══ COMBO ENGINE ═══
