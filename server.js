@@ -491,7 +491,7 @@ app.get('/api/auth/check',(req,res)=>{if(!AUTH.email)return res.json({needsSetup
 app.post('/api/auth/reset',(req,res)=>{const{email}=req.body;if(!email)return res.json({error:'Email required'});if(AUTH.email&&email!==AUTH.email)return res.json({error:'Email does not match'});AUTH={email:null,hash:null,tokens:[]};try{fs.unlinkSync('.auth.json')}catch{}res.json({success:true,message:'Account reset. Create a new one.'})});
 
 // ═══ BOT STATE ═══
-const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','ADA-USDT','DOGE-USDT','LINK-USDT','AVAX-USDT','DOT-USDT','BNB-USDT','SHIB-USDT','UNI-USDT','ATOM-USDT','LTC-USDT','NEAR-USDT','APT-USDT','ARB-USDT','OP-USDT','SUI-USDT','SEI-USDT','INJ-USDT','FET-USDT','RENDER-USDT','PEPE-USDT','WIF-USDT','BONK-USDT','FLOKI-USDT','TIA-USDT','AAVE-USDT','XLM-USDT','HBAR-USDT','VET-USDT','GRT-USDT','STX-USDT','IMX-USDT','JASMY-USDT','ALGO-USDT','SAND-USDT','MANA-USDT','CRV-USDT','ONDO-USDT','JUP-USDT','PENDLE-USDT','KAS-USDT','RUNE-USDT','DYDX-USDT'];
+const ALL_SYMBOLS=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','DOGE-USDT','ADA-USDT','LINK-USDT','AVAX-USDT','SUI-USDT','PEPE-USDT','RENDER-USDT','INJ-USDT','NEAR-USDT','ARB-USDT','OP-USDT','AAVE-USDT','TIA-USDT','BONK-USDT','FET-USDT','APT-USDT'];
 
 const bot={
   mode:'paper',tradingType:'combined',running:false,
