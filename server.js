@@ -456,15 +456,25 @@ function rankCombos(){
     const sharpe=std>0?mean/std:0;
     const consistency=std>0?1/std:999;
     const pf=data.losses>0?(data.wins/data.losses):data.wins;
-    rankings.push({id,signals:data.signals||id.split('+'),wins:data.wins,losses:data.losses,total,winRate:Math.round(wr*100),avgReturn:Math.round(mean*100)/100,sharpe:Math.round(sharpe*100)/100,consistency:Math.round(consistency*100)/100,profitFactor:Math.round(pf*100)/100,score:Math.round((wr*40+Math.min(sharpe,3)*20+Math.min(consistency,10)*20+(mean>0?20:0))*100)/100});
+    rankings.push({id,signals:data.signals||id.split('+'),wins:data.wins,losses:data.losses,total,winRate:Math.round(wr*100),avgReturn:Math.round(mean*100)/100,sharpe:Math.round(sharpe*100)/100,consistency:Math.round(consistency*100)/100,profitFactor:Math.round(pf*100)/100,score:Math.round((wr*30+Math.min(sharpe,3)*40+(mean>0?20:0)+Math.min(consistency,5)*10)*100)/100});
   }
-  rankings.sort((a,b)=>b.score-a.score);
+  // Sort by CONSISTENCY (Sharpe) first, then win rate — we want reliable, not lucky
+  rankings.sort((a,b)=>{
+    // Both must pass minimum WR threshold
+    const aQualifies=a.winRate>=50&&a.sharpe>0.5;
+    const bQualifies=b.winRate>=50&&b.sharpe>0.5;
+    if(aQualifies&&!bQualifies)return -1;
+    if(!aQualifies&&bQualifies)return 1;
+    // Among qualified: sort by Sharpe (consistency), then WR
+    if(Math.abs(a.sharpe-b.sharpe)>0.5)return b.sharpe-a.sharpe;
+    return b.winRate-a.winRate;
+  });
   comboTracker.rankings=rankings;
   // Promote top 3 that meet criteria
   comboTracker.promotedCombos=rankings.filter(r=>{
     const isElite=ELITE_COMBOS.has(r.id);
     const minTrades=isElite?15:20; // elite combos promoted faster
-    return r.total>=minTrades&&r.winRate>=55&&r.winRate<95&&r.sharpe>0.2;
+    return r.total>=minTrades&&r.winRate>=50&&r.winRate<95&&r.sharpe>=1.0&&r.profitFactor>=1.2; // must be consistent AND profitable
   }).slice(0,3);
   if(comboTracker.promotedCombos.length)saveComboData();
 }
