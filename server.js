@@ -651,7 +651,7 @@ async function tick(){
         const dailyPctGain=(bot.dailyPnL/Math.max(bal,1))*100;
         if(dailyPctGain>=bot.dailyTargetPct)continue;
 
-        // ═══ TRADE DECISION — Top 3 Promoted Combos ═══
+        // ═══ TRADE DECISION — Top 3 Promoted Combos Only ═══
         let tradeDecision=null,tradeSource=null;
 
         for(const combo of comboTracker.promotedCombos){
@@ -660,12 +660,12 @@ async function tick(){
           if(decision){
             tradeDecision=decision;
             tradeSource=sigs.join('+');
-            botLog(`${coin} 🧬 ${decision.toUpperCase()} | ${tradeSource} | WR:${combo.winRate}% | Sharpe:${combo.sharpe}`);
-            break; // use first (highest ranked) combo that fires
+            botLog(`${coin} 🧬 ${decision.toUpperCase()} | ${tradeSource} | WR:${combo.winRate}% | Sharpe:${combo.sharpe} | PF:${combo.profitFactor} 🏆`);
+            break;
           }
         }
 
-        if(!tradeDecision)continue; // no combo fired = no trade = patience
+        if(!tradeDecision)continue; // no promoted combo fired = wait for the right setup
 
         // Position sizing
         const slDist=atr*bot.slATR;const tpDist=atr*bot.tpATR;
