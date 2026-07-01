@@ -772,5 +772,8 @@ setTimeout(()=>{fetchNews().catch(()=>{});getSentiment().catch(()=>{})},3000);
 setInterval(()=>{saveComboData()},120000); // save combos every 2 min
 
 app.get('/health',(_,res)=>res.json({status:'ok',version:'v5-swing',combos:Object.keys(comboTracker.combos).length}));
+
+// Self-ping keepalive — prevents Oracle network idle timeout
+setInterval(()=>{fetch('http://localhost:'+PORT+'/health').catch(()=>{})},60000);
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 app.listen(PORT,'0.0.0.0',()=>console.log(`TradeMatrix Pro v5 Swing → http://localhost:${PORT}`));
