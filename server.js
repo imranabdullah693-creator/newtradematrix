@@ -674,10 +674,6 @@ async function tick(){
         const dailyPctGain=(bot.dailyPnL/Math.max(bal,1))*100;
         if(dailyPctGain>=bot.dailyTargetPct)continue;
 
-        // Max 5 trades per day — quality over quantity
-        const todayTrades=bot.history.filter(t=>t.closeTime&&t.closeTime.slice(0,10)===today).length+bot.openTrades.length;
-        if(todayTrades>=5){continue}
-
         // ═══ TRADE DECISION — Top 3 Promoted Combos Only ═══
         let tradeDecision=null,tradeSource=null;
 
