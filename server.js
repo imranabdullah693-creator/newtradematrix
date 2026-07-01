@@ -507,7 +507,7 @@ const bot={
   mode:'paper',tradingType:'combined',running:false,
   symbols:ALL_SYMBOLS,intervalMs:300000, // 5 min for swing trades
   riskPct:2,maxDrawdownPct:15,slATR:2.0,tpATR:2.0,trailingStop:true,trailATR:1.5,
-  maxOpenTrades:5,leverage:3,smallBalanceMode:'auto',dailyTargetPct:3,
+  maxOpenTrades:5,leverage:2,smallBalanceMode:'auto',dailyTargetPct:3,
   openTrades:[],history:[],cooldown:{},credentials:null,
   paperUSD:10000,startBal:10000,peakBal:10000,
   totalPnL:0,winCount:0,lossCount:0,dailyPnL:0,dailyDate:null,
@@ -562,38 +562,61 @@ function smartExits(t,price,atr,analysis){
   const dir=t.side==='buy'?1:-1;
   const pnlPct=((price-t.entryPrice)/t.entryPrice)*100*dir;
   const tpDist=Math.abs(t.tp-t.entryPrice);
-  const progressToTP=tpDist>0?Math.abs(price-t.entryPrice)/tpDist:0;
-  const hoursOpen=(Date.now()-new Date(t.openTime).getTime())/(1000*60*60);
 
-  // 1. Trailing stop
+  // Initialize 3 TP levels on first check
+  if(!t.tp1){
+    t.tp1=t.side==='buy'?t.entryPrice+tpDist*0.5:t.entryPrice-tpDist*0.5;
+    t.tp2=t.side==='buy'?t.entryPrice+tpDist*0.75:t.entryPrice-tpDist*0.75;
+    t.tp3=t.tp;
+    t.tp1Hit=false;t.tp2Hit=false;
+  }
+
+  // 1. Trailing stop (on remaining position)
   if(bot.trailingStop&&t.trailingSl!==null){
     if(t.side==='buy'){if(price>(t.highSince||t.entryPrice))t.highSince=price;const ns=t.highSince-atr*bot.trailATR;if(ns>t.trailingSl)t.trailingSl=ns;if(price<=t.trailingSl)return'trailing_sl'}
     else{if(price<(t.lowSince||t.entryPrice))t.lowSince=price;const ns=t.lowSince+atr*bot.trailATR;if(ns<t.trailingSl)t.trailingSl=ns;if(price>=t.trailingSl)return'trailing_sl'}
   }
-  // 2. Hard SL/TP
+
+  // 2. Hard SL
   if(t.side==='buy'&&price<=t.sl)return'stop_loss';
   if(t.side==='sell'&&price>=t.sl)return'stop_loss';
-  if(t.side==='buy'&&price>=t.tp)return'take_profit';
-  if(t.side==='sell'&&price<=t.tp)return'take_profit';
-  // 3. Move SL to breakeven at 50% TP progress
-  if(progressToTP>=0.5&&!t.slMovedToBE){
-    const newSL=t.entryPrice+(dir*atr*0.1);
-    if((t.side==='buy'&&newSL>t.sl)||(t.side==='sell'&&newSL<t.sl)){t.sl=newSL;t.slMovedToBE=true;botLog(`${t.symbol.replace('-USDT','')} SL→BE @$${newSL.toFixed(4)}`)}
+
+  // 3. TP1 — close 50%, move SL to breakeven
+  if(!t.tp1Hit){
+    const hit=(t.side==='buy'&&price>=t.tp1)||(t.side==='sell'&&price<=t.tp1);
+    if(hit){
+      t.tp1Hit=true;
+      t.qty=t.qty*0.5;t.usdAmount=t.usdAmount*0.5;t.margin=t.margin*0.5;
+      bot.paperUSD+=t.margin; // return closed portion margin
+      t.sl=t.entryPrice+(dir*atr*0.05); // SL to breakeven
+      botLog(`${t.symbol.replace('-USDT','')} TP1 @$${price.toFixed(4)} — closed 50% | SL→BE | 50% still running`);
+      return null;
+    }
   }
-  // 4. Momentum fade — in profit but MACD/RSI turning
-  if(pnlPct>0.5&&progressToTP>=0.3&&analysis){
-    const a=analysis.h1||analysis;
-    const macdFlip=(t.side==='buy'&&a.macdHist<0&&a.prevMacdHist>0)||(t.side==='sell'&&a.macdHist>0&&a.prevMacdHist<0);
-    const rsiAgainst=(t.side==='buy'&&a.rsi>70)||(t.side==='sell'&&a.rsi<30);
-    if(macdFlip||rsiAgainst){botLog(`${t.symbol.replace('-USDT','')} SMART EXIT: +${pnlPct.toFixed(2)}% — ${macdFlip?'MACD flip':'RSI extreme'}`);return'smart_exit_momentum'}
+
+  // 4. TP2 — close half of remaining (25% of original), move SL to TP1
+  if(t.tp1Hit&&!t.tp2Hit){
+    const hit=(t.side==='buy'&&price>=t.tp2)||(t.side==='sell'&&price<=t.tp2);
+    if(hit){
+      t.tp2Hit=true;
+      t.qty=t.qty*0.5;t.usdAmount=t.usdAmount*0.5;t.margin=t.margin*0.5;
+      bot.paperUSD+=t.margin;
+      t.sl=t.tp1; // SL moves to TP1 — profit locked
+      botLog(`${t.symbol.replace('-USDT','')} TP2 @$${price.toFixed(4)} — closed 25% | SL→TP1 | 25% trailing`);
+      return null;
+    }
   }
-  // 5. Time-based — in profit 6+ hours but stalling (swing trade = longer patience)
-  if(hoursOpen>=6&&pnlPct>0.5&&progressToTP<0.7){botLog(`${t.symbol.replace('-USDT','')} SMART EXIT: +${pnlPct.toFixed(2)}% after ${hoursOpen.toFixed(1)}h — stalling`);return'smart_exit_time'}
-  // 6. Supertrend flip — 4H supertrend changes direction against trade
+
+  // 5. TP3 — full TP on remaining 25%
+  if(t.side==='buy'&&price>=t.tp3)return'take_profit';
+  if(t.side==='sell'&&price<=t.tp3)return'take_profit';
+
+  // 6. Supertrend flip — 4H reversal (only if in profit)
   if(analysis&&analysis.h4){
     const stAgainst=(t.side==='buy'&&analysis.h4.supertrend.trend===-1)||(t.side==='sell'&&analysis.h4.supertrend.trend===1);
-    if(stAgainst&&pnlPct>0){botLog(`${t.symbol.replace('-USDT','')} SMART EXIT: +${pnlPct.toFixed(2)}% — 4H Supertrend flipped`);return'smart_exit_supertrend'}
+    if(stAgainst&&pnlPct>0){botLog(`${t.symbol.replace('-USDT','')} SUPERTREND EXIT @$${price.toFixed(4)} — +${pnlPct.toFixed(2)}%`);return'smart_exit_supertrend'}
   }
+
   return null;
 }
 
@@ -650,6 +673,10 @@ async function tick(){
         if(bot.dailyDate!==today){bot.dailyPnL=0;bot.dailyDate=today}
         const dailyPctGain=(bot.dailyPnL/Math.max(bal,1))*100;
         if(dailyPctGain>=bot.dailyTargetPct)continue;
+
+        // Max 5 trades per day — quality over quantity
+        const todayTrades=bot.history.filter(t=>t.closeTime&&t.closeTime.slice(0,10)===today).length+bot.openTrades.length;
+        if(todayTrades>=5){continue}
 
         // ═══ TRADE DECISION — Top 3 Promoted Combos Only ═══
         let tradeDecision=null,tradeSource=null;
