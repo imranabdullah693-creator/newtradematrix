@@ -611,8 +611,8 @@ function smartExits(t,price,atr,analysis){
   if(t.side==='buy'&&price>=t.tp3)return'take_profit';
   if(t.side==='sell'&&price<=t.tp3)return'take_profit';
 
-  // 6. Supertrend flip — 4H reversal (only if in profit)
-  if(analysis&&analysis.h4){
+  // 6. Supertrend flip — only after TP1 hit (don't exit with tiny profit)
+  if(t.tp1Hit&&analysis&&analysis.h4){
     const stAgainst=(t.side==='buy'&&analysis.h4.supertrend.trend===-1)||(t.side==='sell'&&analysis.h4.supertrend.trend===1);
     if(stAgainst&&pnlPct>0){botLog(`${t.symbol.replace('-USDT','')} SUPERTREND EXIT @$${price.toFixed(4)} — +${pnlPct.toFixed(2)}%`);return'smart_exit_supertrend'}
   }
